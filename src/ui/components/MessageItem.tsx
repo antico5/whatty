@@ -43,7 +43,7 @@ function layoutLines(message: Message, chat: Chat, maxWidth: number): LineData[]
   }
 
   if (message.media) {
-    const link = fileUrl(absoluteMediaPath(chat.jid, message.media));
+    const link = fileUrl(absoluteMediaPath(message.media));
     // The file:// link is one long unbroken "word" that exceeds maxWidth — pre-chunk it at the
     // exact column limit (mirroring the renderer's character wrap) so the counted rows always
     // equal the rendered rows. Counting it as one line makes computeWindow overfill the message

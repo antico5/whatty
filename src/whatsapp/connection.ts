@@ -11,7 +11,9 @@ import makeWASocket, {
 } from "baileys";
 import { EventEmitter } from "node:events";
 import { accountIdFromMeId } from "../persistence/accounts.js";
-import { loadAllChats, loadChat } from "../persistence/chatStore.js";
+import { chatOps, loadChat, type FoundMessage } from "../persistence/chatStore.js";
+import { getActiveDb, recordEvent } from "../persistence/db.js";
+import { makeDbAuthState } from "./authState.js";
 import { getLogger } from "./logger.js";
 
 export type ConnectionStatus = "connecting" | "open" | "close" | "logged-out";
@@ -101,8 +103,8 @@ export async function resolveMessageContent(
   key: WAMessageKey,
   deps: {
     loadChat: typeof loadChat;
-    loadAllChats: typeof loadAllChats;
-  } = { loadChat, loadAllChats },
+    findMessageById: (id: string) => Promise<FoundMessage | null>;
+  } = { loadChat, findMessageById: chatOps.findMessageById },
 ): Promise<proto.IMessage | undefined> {
   if (!key.remoteJid || !key.id) return undefined;
   const jid = jidNormalizedUser(key.remoteJid);
@@ -115,15 +117,11 @@ export async function resolveMessageContent(
   if (raw?.message) return raw.message;
 
   // Encrypted edit target keys can use the editor's perspective of remoteJid,
-  // which may point at our own LID instead of the chat that stores the message.
-  for (const candidate of await deps.loadAllChats()) {
-    const fallbackRaw = candidate.messages.find((message) => message.id === key.id)?.raw as
-      | WAMessage
-      | null
-      | undefined;
-    if (fallbackRaw?.message) return fallbackRaw.message;
-  }
-  return undefined;
+  // which may point at our own LID instead of the chat that stores the
+  // message — fall back to the indexed cross-chat lookup by id.
+  const found = await deps.findMessageById(key.id);
+  const fallbackRaw = found?.message.raw as WAMessage | null | undefined;
+  return fallbackRaw?.message ?? undefined;
 }
 
 interface ConnectionUpdateLike {
@@ -225,7 +223,12 @@ export function createConnection(options: ConnectionOptions): Connection {
   }
 
   async function connect(): Promise<void> {
-    const { state, saveCreds } = await useMultiFileAuthState(authDir);
+    // A pending pairing has no identity yet, hence no account DB — it uses a
+    // throwaway multi-file dir that finalization imports into the account DB.
+    // Established sessions read/write creds + signal keys in `auth_kv`.
+    const { state, saveCreds } = linkMode
+      ? await useMultiFileAuthState(authDir)
+      : makeDbAuthState(await getActiveDb());
     creds = state.creds;
     // WhatsApp rejects connections from clients reporting a stale WA Web
     // version with `<failure reason='405'/>` — before a QR is ever issued —
@@ -253,6 +256,7 @@ export function createConnection(options: ConnectionOptions): Connection {
     socket.ev.on("creds.update", saveCreds);
 
     socket.ev.on("connection.update", (update) => {
+      recordEvent("connection.update", null, { ...update, qr: update.qr ? "<qr>" : undefined });
       if (update.qr) emitter.emit("qr", update.qr);
 
       const status = mapConnectionUpdate(update);
@@ -284,38 +288,64 @@ export function createConnection(options: ConnectionOptions): Connection {
       }
     });
 
+    const firstJid = (messages: WAMessage[]): string | null =>
+      messages[0]?.key.remoteJid ?? null;
+
     socket.ev.on("messaging-history.set", (payload) => {
       for (const message of payload.messages) rememberMessage(message);
+      // The full payload can be tens of MB — record the shape, not the body.
+      recordEvent("messaging-history.set", null, {
+        chats: payload.chats.length,
+        contacts: payload.contacts.length,
+        messages: payload.messages.length,
+        jids: [...new Set(payload.messages.map((m) => m.key.remoteJid))].slice(0, 50),
+      });
       emitter.emit("history", payload);
     });
     socket.ev.on("messages.upsert", (payload) => {
       for (const message of payload.messages) rememberMessage(message);
+      recordEvent("messages.upsert", firstJid(payload.messages), payload);
       emitter.emit("messages", payload);
     });
-    socket.ev.on("messages.update", (payload) =>
-      emitter.emit("message-update", payload),
-    );
-    socket.ev.on("messages.reaction", (payload) =>
-      emitter.emit("reaction", payload),
-    );
-    socket.ev.on("message-receipt.update", (payload) =>
-      emitter.emit("receipts", payload),
-    );
-    socket.ev.on("contacts.upsert", (payload) =>
-      emitter.emit("contacts", payload),
-    );
+    socket.ev.on("messages.update", (payload) => {
+      recordEvent("messages.update", payload[0]?.key.remoteJid ?? null, payload);
+      emitter.emit("message-update", payload);
+    });
+    socket.ev.on("messages.reaction", (payload) => {
+      recordEvent("messages.reaction", payload[0]?.key.remoteJid ?? null, payload);
+      emitter.emit("reaction", payload);
+    });
+    socket.ev.on("message-receipt.update", (payload) => {
+      recordEvent("message-receipt.update", payload[0]?.key.remoteJid ?? null, payload);
+      emitter.emit("receipts", payload);
+    });
+    socket.ev.on("contacts.upsert", (payload) => {
+      recordEvent("contacts.upsert", payload[0]?.id ?? null, payload);
+      emitter.emit("contacts", payload);
+    });
     // `contacts.update` carries push names and verified business names (Baileys
     // emits it for every inbound message with a pushName, and for app-state
     // contact changes). Without it, @lid chats never learn their display name.
-    socket.ev.on("contacts.update", (payload) =>
-      emitter.emit("contacts", payload),
-    );
-    socket.ev.on("chats.upsert", (payload) => emitter.emit("chats", payload));
-    socket.ev.on("chats.update", (payload) => emitter.emit("chats", payload));
-    socket.ev.on("groups.update", (payload) => emitter.emit("groups", payload));
-    socket.ev.on("group-participants.update", (payload) =>
-      emitter.emit("groups", payload),
-    );
+    socket.ev.on("contacts.update", (payload) => {
+      recordEvent("contacts.update", payload[0]?.id ?? null, payload);
+      emitter.emit("contacts", payload);
+    });
+    socket.ev.on("chats.upsert", (payload) => {
+      recordEvent("chats.upsert", payload[0]?.id ?? null, payload);
+      emitter.emit("chats", payload);
+    });
+    socket.ev.on("chats.update", (payload) => {
+      recordEvent("chats.update", payload[0]?.id ?? null, payload);
+      emitter.emit("chats", payload);
+    });
+    socket.ev.on("groups.update", (payload) => {
+      recordEvent("groups.update", payload[0]?.id ?? null, payload);
+      emitter.emit("groups", payload);
+    });
+    socket.ev.on("group-participants.update", (payload) => {
+      recordEvent("group-participants.update", payload.id ?? null, payload);
+      emitter.emit("groups", payload);
+    });
   }
 
   emitter.start = async () => {

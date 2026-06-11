@@ -30,7 +30,7 @@ export function mimeToExt(mime: string): string | null {
 }
 
 /** Strip anything that isn't safe in a filename across the chars WA ids may contain. */
-function sanitizeForFilename(name: string): string {
+export function sanitizeForFilename(name: string): string {
   return name.replace(/[^a-zA-Z0-9._-]/g, "_");
 }
 
@@ -47,19 +47,21 @@ export interface SaveMediaOptions {
 }
 
 /**
- * Persist media bytes under the chat's media directory using a filename
- * derived from the message id (stable, collision-free across resyncs).
- * Idempotent: if a same-named, same-sized file already exists we skip the
- * rewrite — eager downloads can otherwise re-fetch the same media on resync.
+ * Persist media bytes under the account's flat media directory. The filename
+ * embeds both the chat jid and the message id: message ids are only unique
+ * per sender, so a flat directory needs the jid prefix to avoid cross-chat
+ * collisions. Idempotent: if a same-named, same-sized file already exists we
+ * skip the rewrite — eager downloads can otherwise re-fetch the same media on
+ * resync.
  */
 export async function saveMedia(jid: string, opts: SaveMediaOptions): Promise<MediaRef> {
-  const dir = mediaDir(jid);
+  const dir = mediaDir();
   await fs.mkdir(dir, { recursive: true });
 
   const ext =
     (opts.mimeType ? mimeToExt(opts.mimeType) : null) ??
     (opts.fileName ? extFromFileName(opts.fileName) : null);
-  const baseName = sanitizeForFilename(opts.messageId);
+  const baseName = `${sanitizeForFilename(jid)}__${sanitizeForFilename(opts.messageId)}`;
   const fileName = ext ? `${baseName}.${ext}` : baseName;
   const target = path.join(dir, fileName);
 
@@ -77,8 +79,8 @@ export async function saveMedia(jid: string, opts: SaveMediaOptions): Promise<Me
   };
 }
 
-export function absoluteMediaPath(jid: string, ref: MediaRef): string {
-  return path.join(mediaDir(jid), ...ref.relativePath.split("/").slice(1));
+export function absoluteMediaPath(ref: MediaRef): string {
+  return path.join(mediaDir(), ...ref.relativePath.split("/").slice(1));
 }
 
 export function fileUrl(absPath: string): string {

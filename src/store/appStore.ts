@@ -8,6 +8,8 @@ import {
   type AccountInfo,
 } from "../persistence/accounts.js";
 import { loadAllChats as defaultLoadAllChats, loadChat as defaultLoadChat } from "../persistence/chatStore.js";
+import { closeActiveDb } from "../persistence/db.js";
+import { prepareActiveAccount } from "../persistence/importer.js";
 import { accountAuthDir, setActiveAccount } from "../persistence/paths.js";
 import type { Chat, Message } from "../types/index.js";
 import { createSerialQueues } from "../util/serialQueues.js";
@@ -146,6 +148,7 @@ export function createAppStore(deps: Partial<AppStoreDeps> = {}): AppStore {
     ingestor = null;
     sender = null;
     await conn?.stop();
+    closeActiveDb();
     setActiveAccount(null);
     chats = [];
   }
@@ -179,6 +182,15 @@ export function createAppStore(deps: Partial<AppStoreDeps> = {}): AppStore {
     setActiveAccount(accountId);
     connectionInfo = { connectionState: "connecting", qr: null };
     notify();
+
+    // Open the account DB and fold in any legacy on-disk data (file auth,
+    // JSON chats). Import failures must not block the session — whatever
+    // could not be imported stays on disk for the next attempt.
+    try {
+      await prepareActiveAccount();
+    } catch (err) {
+      log.error({ err, accountId }, "failed to prepare account database");
+    }
 
     chats = sortByLastActivity(await loadAllChats());
     notify();

@@ -31,10 +31,10 @@ describe("saveMedia", () => {
       messageId: "msg-1",
       mimeType: "image/jpeg",
     });
-    expect(ref.relativePath).toBe("media/msg-1.jpg");
+    expect(ref.relativePath).toBe("media/12345_s.whatsapp.net__msg-1.jpg");
     expect(ref.mimeType).toBe("image/jpeg");
 
-    const abs = absoluteMediaPath(JID, ref);
+    const abs = absoluteMediaPath(ref);
     const contents = await fs.readFile(abs, "utf8");
     expect(contents).toBe("hello world");
   });
@@ -45,18 +45,18 @@ describe("saveMedia", () => {
       messageId: "msg-2",
       fileName: "report.pdf",
     });
-    expect(ref.relativePath).toBe("media/msg-2.pdf");
+    expect(ref.relativePath).toBe("media/12345_s.whatsapp.net__msg-2.pdf");
   });
 
   it("does not duplicate when re-saving the same messageId with the same size", async () => {
     const opts = { data: Buffer.from("same bytes"), messageId: "msg-3", mimeType: "image/png" };
     const first = await saveMedia(JID, opts);
-    const abs = absoluteMediaPath(JID, first);
+    const abs = absoluteMediaPath(first);
     const statBefore = await fs.stat(abs);
 
     await new Promise((r) => setTimeout(r, 5));
     const second = await saveMedia(JID, opts);
-    const statAfter = await fs.stat(absoluteMediaPath(JID, second));
+    const statAfter = await fs.stat(absoluteMediaPath(second));
 
     expect(statAfter.mtimeMs).toBe(statBefore.mtimeMs);
     expect(second.relativePath).toBe(first.relativePath);
@@ -69,7 +69,7 @@ describe("saveMedia", () => {
       messageId: "msg-4",
       mimeType: "image/png",
     });
-    const contents = await fs.readFile(absoluteMediaPath(JID, ref), "utf8");
+    const contents = await fs.readFile(absoluteMediaPath(ref), "utf8");
     expect(contents).toBe("a much longer body of bytes");
   });
 });
@@ -77,7 +77,7 @@ describe("saveMedia", () => {
 describe("absoluteMediaPath / fileUrl", () => {
   it("produces a valid absolute file:// URL", async () => {
     const ref = await saveMedia(JID, { data: Buffer.from("x"), messageId: "msg-5", mimeType: "image/jpeg" });
-    const abs = absoluteMediaPath(JID, ref);
+    const abs = absoluteMediaPath(ref);
     expect(path.isAbsolute(abs)).toBe(true);
 
     const url = fileUrl(abs);

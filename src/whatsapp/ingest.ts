@@ -11,16 +11,8 @@ import {
   type WAMessage,
   type WAMessageUpdate,
 } from "baileys";
-import { loadChat as defaultLoadChat, saveChat as defaultSaveChat } from "../persistence/chatStore.js";
-import {
-  applyDeliveryReceipt,
-  applyMessageDeletion,
-  applyMessageEdit,
-  applyReaction,
-  mergeChatMeta,
-  upsertChat,
-} from "../persistence/reconcile.js";
-import { chatTypeOf, createEmptyChat, minimalChatMeta, type Chat, type DeliveryStatus, type MediaRef } from "../types/index.js";
+import { chatOps, type ChatOps } from "../persistence/chatStore.js";
+import { chatTypeOf, type Chat, type DeliveryStatus, type MediaRef } from "../types/index.js";
 import { createSerialQueues } from "../util/serialQueues.js";
 import type { Connection, ConnectionStatus } from "./connection.js";
 import { decryptEncryptedEdit, encryptedEditOf } from "./edits.js";
@@ -43,8 +35,7 @@ import {
 } from "./mappers.js";
 
 export interface IngestorDeps {
-  loadChat: (jid: string) => Promise<Chat | null>;
-  saveChat: (chat: Chat) => Promise<void>;
+  ops: ChatOps;
   downloadAndStore: (conn: Connection, waMsg: WAMessage, jid: string) => Promise<MediaRef | null>;
 }
 
@@ -54,16 +45,41 @@ export interface Ingestor extends EventEmitter {
   flush(): Promise<void>;
 }
 
-function groupMessagesByJid(messages: WAMessage[]): Map<string, WAMessage[]> {
+const STATUS_BROADCAST_JID = "status@broadcast";
+
+interface GroupedMessages {
+  byJid: Map<string, WAMessage[]>;
+  /** lid → phone-jid pairs discovered from live message keys (`remoteJidAlt`). */
+  aliases: Map<string, string>;
+}
+
+/**
+ * Group messages by chat, normalizing each message to its canonical address:
+ * live messages addressed to a `@lid` jid carry `remoteJidAlt` — the same
+ * chat's phone jid — and are routed there so the two address spaces never
+ * split one conversation into two chats. `status@broadcast` (Status updates)
+ * never becomes a chat. History-synced messages lack `remoteJidAlt`; their
+ * lid-ness is handled by the alias table downstream.
+ */
+function groupMessagesByJid(messages: WAMessage[]): GroupedMessages {
   const byJid = new Map<string, WAMessage[]>();
+  const aliases = new Map<string, string>();
   for (const m of messages) {
     if (!m.key.remoteJid) continue;
-    const jid = jidNormalizedUser(m.key.remoteJid);
+    let jid = jidNormalizedUser(m.key.remoteJid);
+    if (jid === STATUS_BROADCAST_JID) continue;
+    if (jid.endsWith("@lid") && m.key.remoteJidAlt) {
+      const alt = jidNormalizedUser(m.key.remoteJidAlt);
+      if (alt.endsWith("@s.whatsapp.net")) {
+        aliases.set(jid, alt);
+        jid = alt;
+      }
+    }
     const list = byJid.get(jid);
     if (list) list.push(m);
     else byJid.set(jid, [m]);
   }
-  return byJid;
+  return { byJid, aliases };
 }
 
 /** Reaction and protocol (revoke/edit/etc.) content never become standalone chat messages. */
@@ -92,8 +108,7 @@ function statusFromReceipt(receipt: proto.IUserReceipt): DeliveryStatus | null {
 }
 
 export function createIngestor(conn: Connection, deps: Partial<IngestorDeps> = {}): Ingestor {
-  const loadChat = deps.loadChat ?? defaultLoadChat;
-  const saveChat = deps.saveChat ?? defaultSaveChat;
+  const ops = deps.ops ?? chatOps;
   const downloadAndStore = deps.downloadAndStore ?? defaultDownloadAndStore;
   const log = getLogger().child({ module: "ingest" });
   const emitter = new EventEmitter() as Ingestor;
@@ -142,15 +157,17 @@ export function createIngestor(conn: Connection, deps: Partial<IngestorDeps> = {
     }
   }
 
-  /** Load → mutate → save → notify, serialized per-jid so concurrent events can't race writes to chats.json. */
-  function update(jid: string, mutate: (local: Chat | null) => Chat | null): void {
+  /**
+   * Run a targeted store operation, serialized per-jid so concurrent events
+   * can't interleave multi-step logical operations on the same chat. The task
+   * receives the canonical (alias-resolved) jid; a truthy result emits
+   * `chat-updated` for it.
+   */
+  function mutate(jid: string, task: (canonicalJid: string) => Promise<boolean>): void {
     queues.enqueue(jid, async () => {
       try {
-        const local = await loadChat(jid);
-        const next = mutate(local);
-        if (!next) return;
-        await saveChat(next);
-        emitter.emit("chat-updated", jid);
+        const canonical = await ops.getCanonicalJid(jid);
+        if (await task(canonical)) emitter.emit("chat-updated", canonical);
       } catch (err) {
         log.error({ err, jid }, "failed to persist chat update");
       }
@@ -158,7 +175,16 @@ export function createIngestor(conn: Connection, deps: Partial<IngestorDeps> = {
   }
 
   function applyDeletion(jid: string, targetId: string, deletedAt: number): void {
-    update(jid, (local) => applyMessageDeletion(local ?? createEmptyChat(jid, chatTypeOf(jid)), targetId, deletedAt));
+    mutate(jid, (cjid) => ops.applyMessageDeletion(cjid, targetId, deletedAt));
+  }
+
+  function registerAliases(aliases: Map<string, string>): void {
+    for (const [lid, pn] of aliases) {
+      mutate(pn, async () => {
+        await ops.addAlias(lid, pn);
+        return false; // the merge logs/emits via the canonical chat's own updates
+      });
+    }
   }
 
   function encryptedEditKey(jid: string, targetId: string): string {
@@ -215,15 +241,14 @@ export function createIngestor(conn: Connection, deps: Partial<IngestorDeps> = {
         : jidNormalizedUser(targetKey?.remoteJid ?? undefined);
 
     if (!envelopeAuthor || !originalSender) return;
-    update(jid, (local) => {
-      if (!local) return null;
-      const original = local.messages.find((message) => message.id === encryptedEdit.targetId);
+    mutate(jid, async (cjid) => {
+      const original = await ops.getMessage(cjid, encryptedEdit.targetId);
       if (!original) {
         requestEditHistory(jid, encryptedEdit.targetId, [
           { key: waMsg.key, timestamp: waMsg.messageTimestamp },
           { key: targetKey ?? waMsg.key, timestamp: waMsg.messageTimestamp },
         ]);
-        return null;
+        return false;
       }
       const originalRaw = original.raw as WAMessage | null | undefined;
       const historyKey = originalRaw?.key ?? targetKey ?? waMsg.key;
@@ -237,15 +262,15 @@ export function createIngestor(conn: Connection, deps: Partial<IngestorDeps> = {
         const text = decryptEncryptedEdit(encryptedEdit, original, originalSender, envelopeAuthor);
         if (text == null) {
           requestEditHistory(jid, encryptedEdit.targetId, historyRequests);
-          return null;
+          return false;
         }
         pendingEncryptedEdits.delete(key);
         requestedEditHistory.delete(key);
-        return applyMessageEdit(local, encryptedEdit.targetId, text);
+        return ops.applyMessageEdit(cjid, encryptedEdit.targetId, text);
       } catch (err) {
         requestEditHistory(jid, encryptedEdit.targetId, historyRequests);
         log.warn({ err, jid, targetId: encryptedEdit.targetId }, "failed to decrypt encrypted message edit");
-        return null;
+        return false;
       }
     });
   }
@@ -272,14 +297,7 @@ export function createIngestor(conn: Connection, deps: Partial<IngestorDeps> = {
       try {
         const media = await downloadAndStore(conn, waMsg, jid);
         if (!media) return;
-        update(jid, (local) => {
-          if (!local) return null;
-          const idx = local.messages.findIndex((m) => m.id === messageId);
-          if (idx === -1 || local.messages[idx]!.media) return null;
-          const messages = [...local.messages];
-          messages[idx] = { ...messages[idx]!, media };
-          return { ...local, messages };
-        });
+        mutate(jid, (cjid) => ops.setMessageMedia(cjid, messageId, media));
       } catch (err) {
         log.error({ err, jid, messageId }, "media download task failed");
       }
@@ -290,16 +308,23 @@ export function createIngestor(conn: Connection, deps: Partial<IngestorDeps> = {
    * History-synced message keys carry no alt-jid (unlike live messages), so a
    * `@lid` chat restored from history has no way to learn its phone number
    * from messages. Baileys' signal store keeps the lid↔pn pairs delivered at
-   * pairing time — resolve from there and merge the number in.
+   * pairing time — resolve from there, register the alias (folding any
+   * lid-keyed rows into the canonical chat), and merge the number + any known
+   * contact name in.
    */
   function refreshLidPhoneNumber(jid: string): void {
     const lidMapping = conn.getSocket()?.signalRepository?.lidMapping;
     if (!lidMapping) return;
     lidMapping.getPNForLID(jid).then(
       (pn) => {
-        const phoneNumber = pn ? phoneNumberFromJid(jidNormalizedUser(pn)) : null;
-        if (!phoneNumber) return;
-        update(jid, (local) => (local ? mergeChatMeta(local, { jid, phoneNumber }) : null));
+        const phoneJid = pn ? jidNormalizedUser(pn) : null;
+        const phoneNumber = phoneJid ? phoneNumberFromJid(phoneJid) : null;
+        if (!phoneNumber || !phoneJid) return;
+        const contactMeta = mapContact(contacts.get(phoneJid) ?? contacts.get(jid));
+        mutate(jid, async (cjid) => {
+          await ops.addAlias(jid, phoneJid);
+          return ops.mergeChatMeta(cjid, { ...contactMeta, phoneNumber }, false);
+        });
       },
       (err: unknown) => log.warn({ err, jid }, "failed to resolve phone number for lid chat"),
     );
@@ -336,10 +361,9 @@ export function createIngestor(conn: Connection, deps: Partial<IngestorDeps> = {
         : null;
 
     if (incoming.length > 0 || Object.keys(meta).length > 2 || bizName != null) {
-      update(jid, (local) => {
-        const withBiz =
-          bizName != null && local?.displayName == null ? { ...meta, displayName: bizName } : meta;
-        return upsertChat(local, withBiz, incoming);
+      mutate(jid, async (cjid) => {
+        await ops.upsertChatMessages(cjid, meta, incoming, bizName);
+        return true;
       });
     }
 
@@ -352,7 +376,7 @@ export function createIngestor(conn: Connection, deps: Partial<IngestorDeps> = {
       const editedText = editedTextOf(waMsg.message);
       const editedTargetId = editedTargetIdOf(waMsg.message) ?? waMsg.key.id;
       if (editedText != null && editedTargetId) {
-        update(jid, (local) => (local ? applyMessageEdit(local, editedTargetId, editedText) : null));
+        mutate(jid, (cjid) => ops.applyMessageEdit(cjid, editedTargetId, editedText));
       }
 
       applyEncryptedEdit(jid, waMsg);
@@ -377,7 +401,8 @@ export function createIngestor(conn: Connection, deps: Partial<IngestorDeps> = {
     );
     for (const c of payload.contacts) indexContact(c);
 
-    const messagesByJid = groupMessagesByJid(payload.messages);
+    const { byJid: messagesByJid, aliases } = groupMessagesByJid(payload.messages);
+    registerAliases(aliases);
     const jids = new Set<string>();
     for (const c of payload.chats) {
       if (c.id) jids.add(jidNormalizedUser(c.id));
@@ -385,16 +410,22 @@ export function createIngestor(conn: Connection, deps: Partial<IngestorDeps> = {
     for (const jid of messagesByJid.keys()) jids.add(jid);
 
     for (const jid of jids) {
+      if (jid === STATUS_BROADCAST_JID) continue;
       const waChat = payload.chats.find((c) => c.id && jidNormalizedUser(c.id) === jid);
-      const meta = waChat ? mapChat(waChat, contacts) : minimalChatMeta(jid);
+      const meta = waChat ? mapChat(waChat, contacts) : minimalMeta(jid);
       ingestMessages(jid, messagesByJid.get(jid) ?? [], meta);
     }
   }
 
+  function minimalMeta(jid: string): Partial<Chat> {
+    return { jid, type: chatTypeOf(jid) };
+  }
+
   function handleMessages(payload: { messages: WAMessage[] }): void {
-    const byJid = groupMessagesByJid(payload.messages);
+    const { byJid, aliases } = groupMessagesByJid(payload.messages);
+    registerAliases(aliases);
     for (const [jid, waMessages] of byJid) {
-      ingestMessages(jid, waMessages, minimalChatMeta(jid));
+      ingestMessages(jid, waMessages, minimalMeta(jid));
     }
   }
 
@@ -411,14 +442,14 @@ export function createIngestor(conn: Connection, deps: Partial<IngestorDeps> = {
       const editedText = editedTextOf(patch.message);
       if (editedText != null) {
         const targetId = editedTargetIdOf(patch.message) ?? key.id;
-        update(jid, (local) => (local ? applyMessageEdit(local, targetId, editedText) : null));
+        mutate(jid, (cjid) => ops.applyMessageEdit(cjid, targetId, editedText));
         continue;
       }
 
       const status = mapDeliveryStatus(patch.status);
       if (status) {
         const targetId = key.id;
-        update(jid, (local) => (local ? applyDeliveryReceipt(local, targetId, status) : null));
+        mutate(jid, (cjid) => ops.applyDeliveryReceipt(cjid, targetId, status));
       }
     }
   }
@@ -430,7 +461,7 @@ export function createIngestor(conn: Connection, deps: Partial<IngestorDeps> = {
       const status = statusFromReceipt(receipt);
       if (!status) continue;
       const targetId = key.id;
-      update(jid, (local) => (local ? applyDeliveryReceipt(local, targetId, status) : null));
+      mutate(jid, (cjid) => ops.applyDeliveryReceipt(cjid, targetId, status));
     }
   }
 
@@ -442,7 +473,7 @@ export function createIngestor(conn: Connection, deps: Partial<IngestorDeps> = {
       if (!sender) continue;
       const targetId = key.id;
       const value = { emoji: reaction.text ?? "", sender };
-      update(jid, (local) => (local ? applyReaction(local, targetId, value) : null));
+      mutate(jid, (cjid) => ops.applyReaction(cjid, targetId, value));
     }
   }
 
@@ -459,7 +490,7 @@ export function createIngestor(conn: Connection, deps: Partial<IngestorDeps> = {
       for (const key of [c.id, c.lid, c.phoneNumber]) {
         if (!key) continue;
         const jid = jidNormalizedUser(key);
-        update(jid, (local) => (local ? mergeChatMeta(local, { ...meta, jid }) : null));
+        mutate(jid, (cjid) => ops.mergeChatMeta(cjid, meta, false));
       }
     }
   }
@@ -468,8 +499,9 @@ export function createIngestor(conn: Connection, deps: Partial<IngestorDeps> = {
     for (const waChat of payload) {
       if (!waChat.id) continue;
       const jid = jidNormalizedUser(waChat.id);
+      if (jid === STATUS_BROADCAST_JID) continue;
       const meta = mapChat(waChat, contacts);
-      update(jid, (local) => mergeChatMeta(local, meta));
+      mutate(jid, (cjid) => ops.mergeChatMeta(cjid, meta, true));
     }
   }
 
@@ -477,7 +509,7 @@ export function createIngestor(conn: Connection, deps: Partial<IngestorDeps> = {
     const sock = conn.getSocket();
     if (!sock) return;
     sock.groupMetadata(jid).then(
-      (meta: GroupMetadata) => update(jid, (local) => mergeChatMeta(local, mapGroupMetadata(meta))),
+      (meta: GroupMetadata) => mutate(jid, (cjid) => ops.mergeChatMeta(cjid, mapGroupMetadata(meta), true)),
       (err: unknown) => log.warn({ err, jid }, "failed to refresh group metadata"),
     );
   }
@@ -493,7 +525,7 @@ export function createIngestor(conn: Connection, deps: Partial<IngestorDeps> = {
           partial.groupSubject = meta.subject;
         }
         if (meta.participants) partial.participants = mapGroupParticipants(meta.participants);
-        update(jid, (local) => mergeChatMeta(local, partial));
+        mutate(jid, (cjid) => ops.mergeChatMeta(cjid, partial, true));
       }
       return;
     }

@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.5.0"
   },
   "packageManager": "pnpm@11.2.2",
   "scripts": {
@@ -12,7 +12,8 @@
     "dev": "bun --watch src/index.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "debug:all-media": "bash scripts/debug-all-media.sh"
   },
   "dependencies": {
     "@hapi/boom": "^10.0.1",

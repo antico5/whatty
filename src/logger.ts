@@ -15,10 +15,25 @@ import { dataDir } from "./persistence/paths.js";
  */
 let instance: pino.Logger | undefined;
 
+const LOG_MAX_BYTES = 10 * 1024 * 1024;
+
+/** Size-capped rotation at startup: over the cap, the log shifts to `.1` (one
+ * generation kept). Long sessions can overshoot until the next start — fine
+ * for an operational log whose structured payloads live in the events table. */
+function rotateIfOversized(logFile: string): void {
+  try {
+    const stat = fs.statSync(logFile);
+    if (stat.size > LOG_MAX_BYTES) fs.renameSync(logFile, `${logFile}.1`);
+  } catch {
+    // missing file (first run) — nothing to rotate
+  }
+}
+
 export function getLogger(): pino.Logger {
   if (!instance) {
     const logFile = path.join(dataDir(), "whatsapp-terminal.log");
     fs.mkdirSync(path.dirname(logFile), { recursive: true });
+    rotateIfOversized(logFile);
     instance = pino(
       { level: process.env.WHATSAPP_TERMINAL_LOG_LEVEL ?? "info" },
       pino.destination({ dest: logFile, sync: false }),

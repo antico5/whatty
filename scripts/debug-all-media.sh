@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+DATA_DIR="${WHATSAPP_TERMINAL_DATA_DIR:-$(pwd)/data}"
+DEST="/tmp/wa-chat-media-$$"
+mkdir -p "$DEST"
+
+shopt -s nullglob
+count=0
+
+for media_file in "$DATA_DIR"/accounts/*/chats/*/media/*; do
+  [ -f "$media_file" ] || continue
+
+  # Extract path components:
+  #   $DATA_DIR/accounts/<account>/chats/<jid>/media/<filename>
+  rel="${media_file#"$DATA_DIR/accounts/"}"
+  account="${rel%%/*}"
+  rest="${rel#*/chats/}"
+  jid="${rest%%/*}"
+  filename="${media_file##*/}"
+
+  link_name="${account}__${jid}__${filename}"
+  ln -s "$media_file" "$DEST/$link_name"
+  count=$((count + 1))
+done
+
+echo "Linked $count file(s) → $DEST"

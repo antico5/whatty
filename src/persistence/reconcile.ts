@@ -16,7 +16,7 @@ const DELIVERY_ORDER: DeliveryStatus[] = ["pending", "sent", "delivered", "read"
  * both pending and sent. A delivered/read message has definitively arrived and
  * cannot be downgraded by a stale error.
  */
-function advanceDeliveryStatus(
+export function advanceDeliveryStatus(
   local: DeliveryStatus | null,
   incoming: DeliveryStatus | null,
 ): DeliveryStatus | null {
@@ -155,7 +155,7 @@ export function mergeMessages(local: Message[], incoming: Message[]): Message[] 
   return Array.from(byId.values()).sort(compareMessages);
 }
 
-function tombstone(messageId: string, deletedAt: number): Message {
+export function tombstone(messageId: string, deletedAt: number): Message {
   return {
     id: messageId,
     senderJid: null,

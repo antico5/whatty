@@ -6,7 +6,8 @@ import type { WAMessage } from "baileys";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AccountInfo } from "../persistence/accounts.js";
 import { saveChat } from "../persistence/chatStore.js";
-import { accountChatsDir, setActiveAccount } from "../persistence/paths.js";
+import { closeActiveDb } from "../persistence/db.js";
+import { accountDbFile, setActiveAccount } from "../persistence/paths.js";
 import { createEmptyChat } from "../types/index.js";
 import type { Connection } from "../whatsapp/connection.js";
 import { createAppStore, type AppStoreDeps } from "./appStore.js";
@@ -24,6 +25,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  closeActiveDb();
   if (originalDataDir === undefined) delete process.env.WHATSAPP_TERMINAL_DATA_DIR;
   else process.env.WHATSAPP_TERMINAL_DATA_DIR = originalDataDir;
   setActiveAccount(null);
@@ -83,6 +85,7 @@ function fakeWorld(initialAccounts: AccountInfo[]): FakeAccountsWorld {
 async function seedChat(accountId: string, jid: string, displayName: string, lastActivity: number): Promise<void> {
   setActiveAccount(accountId);
   await saveChat({ ...createEmptyChat(jid, "individual"), displayName, lastActivity });
+  closeActiveDb();
   setActiveAccount(null);
 }
 
@@ -214,8 +217,8 @@ describe("appStore", () => {
     expect(store.getAccounts()).toEqual([{ id: otherAccount, name: "Work" }]);
     expect(store.getChats()).toEqual([]);
     // chat data survives the "removal" — only creds are gone
-    const chatsOnDisk = await fs.readdir(accountChatsDir(ACCOUNT_ID));
-    expect(chatsOnDisk).toContain(JID_A);
+    const dbStat = await fs.stat(accountDbFile(ACCOUNT_ID));
+    expect(dbStat.isFile()).toBe(true);
   });
 
   it("on logged-out with no other account, falls through to link mode", async () => {

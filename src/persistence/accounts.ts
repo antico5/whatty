@@ -2,6 +2,8 @@ import { jidNormalizedUser } from "baileys";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { getLogger } from "../logger.js";
+import { importAuthDir, readCredsMeFromDb, wipeAuth } from "../whatsapp/authState.js";
+import { accountDbExists, openAccountDb } from "./db.js";
 import {
   accountAuthDir,
   accountChatsDir,
@@ -12,11 +14,13 @@ import {
 } from "./paths.js";
 
 /**
- * Account lifecycle on disk (layout in paths.ts). The one invariant everything
- * here obeys: chat history and media are NEVER deleted. "Removing" an account
- * only deletes its `auth/` creds, which hides it from the boot-time selector;
- * re-linking the same phone resolves to the same account id and picks the
- * dormant `chats/` tree back up.
+ * Account lifecycle. Creds live in the account database (`auth_kv` in
+ * chats.db); pending pairings still use a multi-file dir (no identity → no
+ * account DB yet) and are imported on finalization. The one invariant
+ * everything here obeys: chat history and media are NEVER deleted.
+ * "Removing" an account only wipes its creds, which hides it from the
+ * boot-time selector; re-linking the same phone resolves to the same account
+ * id and picks the dormant data back up.
  */
 
 export interface AccountInfo {
@@ -33,8 +37,8 @@ interface CredsMe {
   name: string | null;
 }
 
-/** Read the paired identity out of a Baileys auth dir, or null if absent/unpaired/corrupt. */
-async function readCredsMe(authDir: string): Promise<CredsMe | null> {
+/** Read the paired identity out of a legacy/pending multi-file auth dir. */
+async function readCredsMeFromDir(authDir: string): Promise<CredsMe | null> {
   let raw: string;
   try {
     raw = await fs.readFile(path.join(authDir, "creds.json"), "utf8");
@@ -51,15 +55,30 @@ async function readCredsMe(authDir: string): Promise<CredsMe | null> {
   }
 }
 
+/** Paired identity of an account: its DB first, legacy auth dir as fallback. */
+async function readAccountCredsMe(accountId: string): Promise<CredsMe | null> {
+  if (accountDbExists(accountId)) {
+    const db = await openAccountDb(accountId);
+    try {
+      const me = readCredsMeFromDb(db);
+      if (me) return me;
+    } finally {
+      db.close();
+    }
+  }
+  return readCredsMeFromDir(accountAuthDir(accountId));
+}
+
 /** Map a creds `me.id` (possibly device-suffixed, e.g. `…:9@s.whatsapp.net`) to an account id. */
 export function accountIdFromMeId(meId: string): string {
   return jidNormalizedUser(meId);
 }
 
 /**
- * Accounts shown in the boot-time selector: those with paired creds on disk.
- * Account dirs whose creds were removed (or never finished pairing) are
- * silently skipped — their chat data stays dormant until the phone re-links.
+ * Accounts shown in the boot-time selector: those with paired creds (in their
+ * DB, or in a not-yet-imported legacy auth dir). Account dirs whose creds
+ * were removed (or never finished pairing) are silently skipped — their chat
+ * data stays dormant until the phone re-links.
  */
 export async function listLinkedAccounts(): Promise<AccountInfo[]> {
   let entries: import("node:fs").Dirent[];
@@ -73,18 +92,26 @@ export async function listLinkedAccounts(): Promise<AccountInfo[]> {
   const accounts: AccountInfo[] = [];
   for (const entry of entries) {
     if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
-    const me = await readCredsMe(accountAuthDir(entry.name));
+    const me = await readAccountCredsMe(entry.name);
     if (me) accounts.push({ id: entry.name, name: me.name });
   }
   return accounts.sort((a, b) => (a.name ?? a.id).localeCompare(b.name ?? b.id));
 }
 
 /**
- * "Remove" an account: delete its creds so it disappears from the selector.
+ * "Remove" an account: wipe its creds so it disappears from the selector.
  * Chat history and media are deliberately left in place — if the same phone
- * links again it resumes this directory with its history intact.
+ * links again it resumes this account with its history intact.
  */
 export async function removeAccountCreds(accountId: string): Promise<void> {
+  if (accountDbExists(accountId)) {
+    const db = await openAccountDb(accountId);
+    try {
+      wipeAuth(db);
+    } finally {
+      db.close();
+    }
+  }
   await fs.rm(accountAuthDir(accountId), { recursive: true, force: true });
 }
 
@@ -110,28 +137,36 @@ export async function cleanupPendingAuthDirs(): Promise<void> {
 }
 
 /**
- * A pending pairing succeeded: its creds now say who we are. Move them into
- * the account's permanent auth dir — replacing any stale creds from a previous
- * link of the same phone — and leave any existing chats/ untouched so a
- * re-linked account resumes its history.
+ * A pending pairing succeeded: its creds now say who we are. Import them into
+ * the account's database — replacing any stale creds from a previous link of
+ * the same phone — and leave existing chat data untouched so a re-linked
+ * account resumes its history.
  */
 export async function finalizePendingAccount(pendingAuthDir: string): Promise<AccountInfo> {
-  const me = await readCredsMe(pendingAuthDir);
+  const me = await readCredsMeFromDir(pendingAuthDir);
   if (!me) throw new Error(`pending auth dir has no paired creds: ${pendingAuthDir}`);
   const id = accountIdFromMeId(me.id);
 
-  await fs.mkdir(accountChatsDir(id), { recursive: true });
-  await fs.rm(accountAuthDir(id), { recursive: true, force: true });
-  await fs.rename(pendingAuthDir, accountAuthDir(id));
+  const db = await openAccountDb(id);
+  try {
+    wipeAuth(db);
+    await importAuthDir(db, pendingAuthDir);
+    if (!readCredsMeFromDb(db)) {
+      throw new Error(`pending auth import produced no readable creds for ${id}`);
+    }
+  } finally {
+    db.close();
+  }
+  await fs.rm(pendingAuthDir, { recursive: true, force: true });
   return { id, name: me.name };
 }
 
 /**
  * One-time migration from the single-account layout (`data/auth` +
- * `data/chats`) into `data/accounts/<id>/{auth,chats}`. The owning account id
- * comes from the legacy creds. Legacy data we can't attribute (creds missing
- * or unpaired) is left exactly where it is — never deleted — and just won't
- * appear in the selector.
+ * `data/chats`) into `data/accounts/<id>/{auth,chats}`. The per-account
+ * importer then folds those into the account DB on first session. Legacy
+ * data we can't attribute (creds missing or unpaired) is left exactly where
+ * it is — never deleted — and just won't appear in the selector.
  */
 export async function migrateLegacyLayout(): Promise<void> {
   const log = getLogger().child({ module: "accounts" });
@@ -142,7 +177,7 @@ export async function migrateLegacyLayout(): Promise<void> {
   const hasLegacyChats = await fs.stat(legacyChats).then(() => true).catch(() => false);
   if (!hasLegacyAuth && !hasLegacyChats) return;
 
-  const me = hasLegacyAuth ? await readCredsMe(legacyAuth) : null;
+  const me = hasLegacyAuth ? await readCredsMeFromDir(legacyAuth) : null;
   if (!me) {
     log.warn(
       { legacyAuth, legacyChats },

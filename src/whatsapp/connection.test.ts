@@ -100,7 +100,10 @@ describe("resolveMessageContent", () => {
       { remoteJid: selfJid, fromMe: true, id },
       {
         loadChat: async () => null,
-        loadAllChats: async () => [peerChat],
+        findMessageById: async (messageId) => {
+          const message = peerChat.messages.find((m) => m.id === messageId);
+          return message ? { chatJid: peerChat.jid, message } : null;
+        },
       },
     );
 

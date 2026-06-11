@@ -13,6 +13,7 @@ import {
 import {
   accountAuthDir,
   accountChatsDir,
+  accountDbFile,
   accountsRootDir,
   legacyAuthDir,
   legacyChatsDir,
@@ -77,15 +78,16 @@ describe("removeAccountCreds", () => {
 });
 
 describe("finalizePendingAccount", () => {
-  it("moves pending creds into the account dir derived from the normalized me.id", async () => {
+  it("imports pending creds into the DB of the account derived from the normalized me.id", async () => {
     const pending = await createPendingAuthDir();
     await writeCreds(pending, { id: "5491100000000:7@s.whatsapp.net", name: "Main" });
 
     const account = await finalizePendingAccount(pending);
 
     expect(account).toEqual({ id: ACCOUNT_ID, name: "Main" });
-    expect(await exists(path.join(accountAuthDir(ACCOUNT_ID), "creds.json"))).toBe(true);
+    expect(await exists(accountDbFile(ACCOUNT_ID))).toBe(true);
     expect(await exists(pending)).toBe(false);
+    expect(await listLinkedAccounts()).toEqual([{ id: ACCOUNT_ID, name: "Main" }]);
   });
 
   it("re-linking resumes the existing chat data and replaces stale creds", async () => {
@@ -99,10 +101,8 @@ describe("finalizePendingAccount", () => {
 
     expect(account.id).toBe(ACCOUNT_ID);
     expect(await exists(chatDir)).toBe(true);
-    const creds = JSON.parse(
-      await fs.readFile(path.join(accountAuthDir(ACCOUNT_ID), "creds.json"), "utf8"),
-    ) as { me: { name: string } };
-    expect(creds.me.name).toBe("Back");
+    // the DB creds (fresh link) win over the stale legacy auth dir
+    expect(await listLinkedAccounts()).toEqual([{ id: ACCOUNT_ID, name: "Back" }]);
   });
 
   it("rejects a pending dir without paired creds", async () => {

@@ -66,8 +66,8 @@ describe("downloadAndStore", () => {
   it("downloads and persists media on success", async () => {
     vi.mocked(downloadMediaMessage).mockResolvedValueOnce(Buffer.from("image bytes"));
     const ref = await downloadAndStore(fakeConnection(), imageMessage("m2"), JID);
-    expect(ref?.relativePath).toBe("media/m2.jpg");
-    const contents = await fs.readFile(absoluteMediaPath(JID, ref!), "utf8");
+    expect(ref?.relativePath).toBe("media/12345_s.whatsapp.net__m2.jpg");
+    const contents = await fs.readFile(absoluteMediaPath(ref!), "utf8");
     expect(contents).toBe("image bytes");
   });
 
@@ -83,7 +83,7 @@ describe("downloadAndStore", () => {
       .mockRejectedValueOnce(new Error("network blip"))
       .mockResolvedValueOnce(Buffer.from("retry bytes"));
     const ref = await downloadAndStore(fakeConnection(), imageMessage("m4"), JID);
-    expect(ref?.relativePath).toBe("media/m4.jpg");
+    expect(ref?.relativePath).toBe("media/12345_s.whatsapp.net__m4.jpg");
     expect(downloadMediaMessage).toHaveBeenCalledTimes(2);
   });
 
