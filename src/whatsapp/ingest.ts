@@ -181,8 +181,12 @@ export function createIngestor(conn: Connection, deps: Partial<IngestorDeps> = {
   function registerAliases(aliases: Map<string, string>): void {
     for (const [lid, pn] of aliases) {
       mutate(pn, async () => {
-        await ops.addAlias(lid, pn);
-        return false; // the merge logs/emits via the canonical chat's own updates
+        if (!(await ops.addAlias(lid, pn))) return false;
+        // The fold orphans any chat-list entry keyed by the lid; announce the
+        // lid so subscribers reload it (resolving to the canonical chat) and
+        // drop the stale entry. True emits for the canonical jid too.
+        emitter.emit("chat-updated", lid);
+        return true;
       });
     }
   }

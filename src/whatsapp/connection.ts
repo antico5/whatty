@@ -145,13 +145,16 @@ export function mapConnectionUpdate(
 }
 
 export interface ConnectionOptions {
-  /** Where Baileys creds live — an account's auth dir, or a pending dir while linking. */
-  authDir: string;
+  /**
+   * Pending pairing dir holding multi-file Baileys creds — required (and only
+   * used) in `linkMode`. Established sessions keep creds in the account DB.
+   */
+  authDir?: string;
   /**
    * Pairing a not-yet-known account: when the post-QR close arrives with a
    * paired identity in creds, emit `paired` (with the normalized account id)
-   * instead of reconnecting — the caller moves the auth dir into its permanent
-   * account location and starts a fresh connection from there.
+   * instead of reconnecting — the caller imports the pending auth dir into its
+   * permanent account DB and starts a fresh connection from there.
    */
   linkMode?: boolean;
 }
@@ -165,6 +168,9 @@ export interface Connection extends EventEmitter {
 
 export function createConnection(options: ConnectionOptions): Connection {
   const { authDir, linkMode = false } = options;
+  if (linkMode && authDir === undefined) {
+    throw new Error("linkMode requires an authDir for the pending pairing creds");
+  }
   const emitter = new EventEmitter() as Connection;
   const log = getLogger().child({ module: "connection" });
 
@@ -226,7 +232,7 @@ export function createConnection(options: ConnectionOptions): Connection {
     // A pending pairing has no identity yet, hence no account DB — it uses a
     // throwaway multi-file dir that finalization imports into the account DB.
     // Established sessions read/write creds + signal keys in `auth_kv`.
-    const { state, saveCreds } = linkMode
+    const { state, saveCreds } = linkMode && authDir !== undefined
       ? await useMultiFileAuthState(authDir)
       : makeDbAuthState(await getActiveDb());
     creds = state.creds;

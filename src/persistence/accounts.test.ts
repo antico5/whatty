@@ -7,17 +7,11 @@ import {
   createPendingAuthDir,
   finalizePendingAccount,
   listLinkedAccounts,
-  migrateLegacyLayout,
   removeAccountCreds,
+  type AccountInfo,
 } from "./accounts.js";
-import {
-  accountAuthDir,
-  accountChatsDir,
-  accountDbFile,
-  accountsRootDir,
-  legacyAuthDir,
-  legacyChatsDir,
-} from "./paths.js";
+import { openAccountDb } from "./db.js";
+import { accountDbFile, accountDir, accountsRootDir } from "./paths.js";
 
 let tmpDir: string;
 let originalDataDir: string | undefined;
@@ -41,17 +35,43 @@ async function writeCreds(authDir: string, me: { id: string; name?: string } | n
   await fs.writeFile(path.join(authDir, "creds.json"), JSON.stringify(me ? { me } : {}), "utf8");
 }
 
+/** Run the real pairing flow: pending dir with paired creds → finalized account DB. */
+async function linkAccount(meId: string, name: string): Promise<AccountInfo> {
+  const pending = await createPendingAuthDir();
+  await writeCreds(pending, { id: meId, name });
+  return finalizePendingAccount(pending);
+}
+
+async function insertChatRow(accountId: string, jid: string): Promise<void> {
+  const db = await openAccountDb(accountId);
+  try {
+    db.sql.prepare("INSERT INTO chats (jid, type) VALUES (?, 'individual')").run(jid);
+  } finally {
+    db.close();
+  }
+}
+
+async function countChatRows(accountId: string): Promise<number> {
+  const db = await openAccountDb(accountId);
+  try {
+    return (db.sql.prepare("SELECT COUNT(*) AS n FROM chats").get() as { n: number }).n;
+  } finally {
+    db.close();
+  }
+}
+
 async function exists(p: string): Promise<boolean> {
   return fs.stat(p).then(() => true).catch(() => false);
 }
 
 describe("listLinkedAccounts", () => {
-  it("lists only account dirs with paired creds, skipping pending and creds-less dirs", async () => {
-    await writeCreds(accountAuthDir(ACCOUNT_ID), { id: "5491100000000:7@s.whatsapp.net", name: "Main" });
-    // removed account: chats remain, creds gone
-    await fs.mkdir(accountChatsDir("removed@s.whatsapp.net"), { recursive: true });
-    // unpaired creds (no `me`)
-    await writeCreds(accountAuthDir("unpaired@s.whatsapp.net"), null);
+  it("lists only accounts with paired DB creds, skipping pending and creds-less dirs", async () => {
+    await linkAccount("5491100000000:7@s.whatsapp.net", "Main");
+    // removed account: DB with wiped creds remains, chats stay dormant
+    await linkAccount("5491100000001:2@s.whatsapp.net", "Gone");
+    await removeAccountCreds("5491100000001@s.whatsapp.net");
+    // account dir without a DB (e.g. only media left behind)
+    await fs.mkdir(path.join(accountDir("nodb@s.whatsapp.net"), "media"), { recursive: true });
     // in-progress pairing
     await fs.mkdir(path.join(accountsRootDir(), ".pending-123"), { recursive: true });
 
@@ -64,16 +84,20 @@ describe("listLinkedAccounts", () => {
 });
 
 describe("removeAccountCreds", () => {
-  it("deletes only the auth dir, never the chats", async () => {
-    await writeCreds(accountAuthDir(ACCOUNT_ID), { id: ACCOUNT_ID });
-    const chatDir = path.join(accountChatsDir(ACCOUNT_ID), "123@s.whatsapp.net");
-    await fs.mkdir(chatDir, { recursive: true });
+  it("wipes only the creds, never the chat data", async () => {
+    await linkAccount("5491100000000:7@s.whatsapp.net", "Main");
+    await insertChatRow(ACCOUNT_ID, "123@s.whatsapp.net");
 
     await removeAccountCreds(ACCOUNT_ID);
 
-    expect(await exists(accountAuthDir(ACCOUNT_ID))).toBe(false);
-    expect(await exists(chatDir)).toBe(true);
     expect(await listLinkedAccounts()).toEqual([]);
+    expect(await exists(accountDbFile(ACCOUNT_ID))).toBe(true);
+    expect(await countChatRows(ACCOUNT_ID)).toBe(1);
+  });
+
+  it("is a no-op for an account without a DB", async () => {
+    await removeAccountCreds(ACCOUNT_ID);
+    expect(await exists(accountDbFile(ACCOUNT_ID))).toBe(false);
   });
 });
 
@@ -91,17 +115,14 @@ describe("finalizePendingAccount", () => {
   });
 
   it("re-linking resumes the existing chat data and replaces stale creds", async () => {
-    const chatDir = path.join(accountChatsDir(ACCOUNT_ID), "123@s.whatsapp.net");
-    await fs.mkdir(chatDir, { recursive: true });
-    await writeCreds(accountAuthDir(ACCOUNT_ID), { id: "stale" });
+    await linkAccount("5491100000000:7@s.whatsapp.net", "Old");
+    await insertChatRow(ACCOUNT_ID, "123@s.whatsapp.net");
 
-    const pending = await createPendingAuthDir();
-    await writeCreds(pending, { id: `${ACCOUNT_ID.split("@")[0]}:9@s.whatsapp.net`, name: "Back" });
-    const account = await finalizePendingAccount(pending);
+    const account = await linkAccount(`${ACCOUNT_ID.split("@")[0]}:9@s.whatsapp.net`, "Back");
 
     expect(account.id).toBe(ACCOUNT_ID);
-    expect(await exists(chatDir)).toBe(true);
-    // the DB creds (fresh link) win over the stale legacy auth dir
+    expect(await countChatRows(ACCOUNT_ID)).toBe(1);
+    // the fresh creds win over the stale ones
     expect(await listLinkedAccounts()).toEqual([{ id: ACCOUNT_ID, name: "Back" }]);
   });
 
@@ -113,56 +134,12 @@ describe("finalizePendingAccount", () => {
 
 describe("cleanupPendingAuthDirs", () => {
   it("removes only pending dirs", async () => {
-    await writeCreds(accountAuthDir(ACCOUNT_ID), { id: ACCOUNT_ID });
+    await linkAccount("5491100000000:7@s.whatsapp.net", "Main");
     const pending = await createPendingAuthDir();
 
     await cleanupPendingAuthDirs();
 
     expect(await exists(pending)).toBe(false);
-    expect(await exists(accountAuthDir(ACCOUNT_ID))).toBe(true);
-  });
-});
-
-describe("migrateLegacyLayout", () => {
-  it("moves legacy auth and chats under the account dir named by the creds identity", async () => {
-    await writeCreds(legacyAuthDir(), { id: "5491100000000:7@s.whatsapp.net", name: "Main" });
-    const legacyChat = path.join(legacyChatsDir(), "123@s.whatsapp.net");
-    await fs.mkdir(legacyChat, { recursive: true });
-    await fs.writeFile(path.join(legacyChat, "chats.json"), "{}", "utf8");
-
-    await migrateLegacyLayout();
-
-    expect(await exists(legacyAuthDir())).toBe(false);
-    expect(await exists(legacyChatsDir())).toBe(false);
-    expect(await exists(path.join(accountAuthDir(ACCOUNT_ID), "creds.json"))).toBe(true);
-    expect(await exists(path.join(accountChatsDir(ACCOUNT_ID), "123@s.whatsapp.net", "chats.json"))).toBe(true);
     expect(await listLinkedAccounts()).toEqual([{ id: ACCOUNT_ID, name: "Main" }]);
-  });
-
-  it("is a no-op without legacy data, and leaves unattributable legacy data in place", async () => {
-    await migrateLegacyLayout(); // nothing to do
-
-    // legacy chats but creds without identity → cannot attribute, must not touch
-    await writeCreds(legacyAuthDir(), null);
-    const legacyChat = path.join(legacyChatsDir(), "123@s.whatsapp.net");
-    await fs.mkdir(legacyChat, { recursive: true });
-
-    await migrateLegacyLayout();
-
-    expect(await exists(legacyChat)).toBe(true);
-    expect(await exists(path.join(legacyAuthDir(), "creds.json"))).toBe(true);
-  });
-
-  it("does not overwrite an already-populated account dir", async () => {
-    await writeCreds(legacyAuthDir(), { id: ACCOUNT_ID });
-    await writeCreds(accountAuthDir(ACCOUNT_ID), { id: ACCOUNT_ID, name: "Existing" });
-
-    await migrateLegacyLayout();
-
-    expect(await exists(legacyAuthDir())).toBe(true);
-    const creds = JSON.parse(
-      await fs.readFile(path.join(accountAuthDir(ACCOUNT_ID), "creds.json"), "utf8"),
-    ) as { me: { name?: string } };
-    expect(creds.me.name).toBe("Existing");
   });
 });

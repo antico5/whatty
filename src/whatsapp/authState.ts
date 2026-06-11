@@ -14,9 +14,9 @@ import type { AccountDb } from "../persistence/db.js";
  * DB-backed replacement for Baileys' `useMultiFileAuthState`: creds + signal
  * keys live as rows in the account database's `auth_kv` table instead of
  * thousands of tiny JSON files. Values are serialized with Baileys'
- * `BufferJSON` (same encoding the file store used), and ids are sanitized
+ * `BufferJSON` (same encoding the file store uses), and ids are sanitized
  * with the same character mapping (`/`→`__`, `:`→`-`) so rows imported from
- * legacy filenames stay addressable.
+ * a pending pairing's filenames stay addressable.
  */
 
 function fixId(id: string): string {
@@ -95,11 +95,12 @@ export function wipeAuth(db: AccountDb): void {
 }
 
 /**
- * Import a legacy multi-file auth dir into `auth_kv`, verbatim: file contents
- * are already BufferJSON-encoded and filenames are already id-sanitized, so
- * `<name>.json` maps 1:1 onto a row keyed `<name>` (`creds.json` → `creds`).
- * Unparseable files abort the import (nothing is deleted). Returns the number
- * of imported rows; the caller decides whether to delete the source dir.
+ * Import a pending pairing's multi-file auth dir into `auth_kv`, verbatim:
+ * file contents are already BufferJSON-encoded and filenames are already
+ * id-sanitized, so `<name>.json` maps 1:1 onto a row keyed `<name>`
+ * (`creds.json` → `creds`). Unparseable files abort the import (nothing is
+ * deleted). Returns the number of imported rows; the caller decides whether
+ * to delete the source dir.
  */
 export async function importAuthDir(db: AccountDb, authDir: string): Promise<number> {
   let files: string[];

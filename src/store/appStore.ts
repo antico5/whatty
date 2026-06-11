@@ -3,14 +3,12 @@ import {
   createPendingAuthDir as defaultCreatePendingAuthDir,
   finalizePendingAccount as defaultFinalizePendingAccount,
   listLinkedAccounts as defaultListLinkedAccounts,
-  migrateLegacyLayout as defaultMigrateLegacyLayout,
   removeAccountCreds as defaultRemoveAccountCreds,
   type AccountInfo,
 } from "../persistence/accounts.js";
 import { loadAllChats as defaultLoadAllChats, loadChat as defaultLoadChat } from "../persistence/chatStore.js";
-import { closeActiveDb } from "../persistence/db.js";
-import { prepareActiveAccount } from "../persistence/importer.js";
-import { accountAuthDir, setActiveAccount } from "../persistence/paths.js";
+import { closeActiveDb, getActiveDb, pruneEvents } from "../persistence/db.js";
+import { setActiveAccount } from "../persistence/paths.js";
 import type { Chat, Message } from "../types/index.js";
 import { createSerialQueues } from "../util/serialQueues.js";
 import {
@@ -42,7 +40,6 @@ export interface AppStoreDeps {
   loadChat: (jid: string) => Promise<Chat | null>;
   createConnection: (options: ConnectionOptions) => Connection;
   listLinkedAccounts: () => Promise<AccountInfo[]>;
-  migrateLegacyLayout: () => Promise<void>;
   cleanupPendingAuthDirs: () => Promise<void>;
   createPendingAuthDir: () => Promise<string>;
   finalizePendingAccount: (pendingAuthDir: string) => Promise<AccountInfo>;
@@ -85,7 +82,6 @@ export function createAppStore(deps: Partial<AppStoreDeps> = {}): AppStore {
   const loadChat = deps.loadChat ?? defaultLoadChat;
   const createConnection = deps.createConnection ?? defaultCreateConnection;
   const listLinkedAccounts = deps.listLinkedAccounts ?? defaultListLinkedAccounts;
-  const migrateLegacyLayout = deps.migrateLegacyLayout ?? defaultMigrateLegacyLayout;
   const cleanupPendingAuthDirs = deps.cleanupPendingAuthDirs ?? defaultCleanupPendingAuthDirs;
   const createPendingAuthDir = deps.createPendingAuthDir ?? defaultCreatePendingAuthDir;
   const finalizePendingAccount = deps.finalizePendingAccount ?? defaultFinalizePendingAccount;
@@ -120,7 +116,11 @@ export function createAppStore(deps: Partial<AppStoreDeps> = {}): AppStore {
     queues.enqueue(jid, async () => {
       try {
         const chat = await loadChat(jid);
-        if (chat) upsertChatInList(chat);
+        if (!chat) return;
+        // Alias resolution can move a chat to its canonical jid (lid → phone
+        // jid); drop the entry keyed by the old address or both would render.
+        if (chat.jid !== jid) chats = chats.filter((c) => c.jid !== jid);
+        upsertChatInList(chat);
       } catch (err) {
         log.error({ err, jid }, "failed to reload chat for store");
       }
@@ -183,19 +183,17 @@ export function createAppStore(deps: Partial<AppStoreDeps> = {}): AppStore {
     connectionInfo = { connectionState: "connecting", qr: null };
     notify();
 
-    // Open the account DB and fold in any legacy on-disk data (file auth,
-    // JSON chats). Import failures must not block the session — whatever
-    // could not be imported stays on disk for the next attempt.
+    // Trim the events ring buffer; a prune failure must not block the session.
     try {
-      await prepareActiveAccount();
+      pruneEvents(await getActiveDb());
     } catch (err) {
-      log.error({ err, accountId }, "failed to prepare account database");
+      log.error({ err, accountId }, "failed to prune the events ring buffer");
     }
 
     chats = sortByLastActivity(await loadAllChats());
     notify();
 
-    const conn = createConnection({ authDir: accountAuthDir(accountId) });
+    const conn = createConnection({});
     connection = conn;
     let deadHandled = false;
     conn.on("qr", (qr: string) => setQr(qr));
@@ -242,7 +240,6 @@ export function createAppStore(deps: Partial<AppStoreDeps> = {}): AppStore {
 
   return {
     async init(): Promise<void> {
-      await migrateLegacyLayout();
       await cleanupPendingAuthDirs();
       accounts = await listLinkedAccounts();
       if (accounts.length === 0) {

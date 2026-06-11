@@ -193,7 +193,8 @@ describe("chatOps (targeted tier)", () => {
     await saveChat(stray);
     await seed(); // canonical chat under the phone jid
 
-    await chatOps.addAlias(LID, JID);
+    expect(await chatOps.addAlias(LID, JID)).toBe(true);
+    expect(await chatOps.addAlias(LID, JID)).toBe(false); // already registered
 
     // lid chat is gone as a standalone; its message moved into the canonical
     expect((await listChatJids()).sort()).toEqual([JID].sort());
@@ -206,7 +207,7 @@ describe("chatOps (targeted tier)", () => {
     expect((await loadChat(JID))?.messages.find((m) => m.id === "lid-m1")?.text).toBe("edited via lid");
 
     // first write wins: re-pointing is ignored
-    await chatOps.addAlias(LID, "other@s.whatsapp.net");
+    expect(await chatOps.addAlias(LID, "other@s.whatsapp.net")).toBe(false);
     expect((await loadChat(LID))?.jid).toBe(JID);
   });
 

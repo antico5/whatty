@@ -255,9 +255,10 @@ export interface ChatOps {
   /**
    * Register `aliasJid` as an alternate identity of `chatJid` and fold any
    * chat rows accumulated under the alias into the canonical record. First
-   * write wins — an alias is never silently re-pointed.
+   * write wins — an alias is never silently re-pointed. Returns true only
+   * when the alias was newly registered.
    */
-  addAlias(aliasJid: string, chatJid: string): Promise<void>;
+  addAlias(aliasJid: string, chatJid: string): Promise<boolean>;
   /**
    * Reconcile-merge incoming meta + messages into the chat, touching only the
    * affected message rows. `fillDisplayNameIfMissing` mirrors the verified-biz
@@ -300,17 +301,17 @@ export const chatOps: ChatOps = {
   },
 
   async addAlias(aliasJid, chatJid) {
-    if (aliasJid === chatJid) return;
+    if (aliasJid === chatJid) return false;
     const db = await getActiveDb();
-    db.transaction(() => {
+    return db.transaction(() => {
       const existing = db.sql.prepare("SELECT chat_jid FROM aliases WHERE alias_jid = ?").get(aliasJid) as
         | { chat_jid: string }
         | undefined;
-      if (existing) return;
+      if (existing) return false;
       db.sql.prepare("INSERT INTO aliases (alias_jid, chat_jid) VALUES (?, ?)").run(aliasJid, chatJid);
 
       const strayShell = chatShell(db, aliasJid);
-      if (!strayShell) return;
+      if (!strayShell) return true;
       const strayMessages = loadMessages(db, aliasJid);
 
       const targetShell = chatShell(db, chatJid);
@@ -338,6 +339,7 @@ export const chatOps: ChatOps = {
         { aliasJid, chatJid, mergedMessages: strayMessages.length },
         "merged alias-keyed chat into canonical",
       );
+      return true;
     });
   },
 
@@ -467,6 +469,3 @@ export const chatOps: ChatOps = {
     return row ? { chatJid: row.chat_jid, message: messageFromRow(row) } : null;
   },
 };
-
-/** Import-time seam: whole-chat tier against an explicit handle. */
-export const internal = { loadChatFrom, saveChatTo, resolveAlias };

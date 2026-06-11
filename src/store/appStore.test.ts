@@ -66,7 +66,6 @@ function fakeWorld(initialAccounts: AccountInfo[]): FakeAccountsWorld {
       return conn;
     },
     listLinkedAccounts: async () => world.accounts.filter((a) => !world.removedCreds.includes(a.id)),
-    migrateLegacyLayout: async () => {},
     cleanupPendingAuthDirs: async () => {},
     createPendingAuthDir: async () => path.join(tmpDir, "accounts", ".pending-test"),
     finalizePendingAccount: async () => {
@@ -194,6 +193,53 @@ describe("appStore", () => {
 
     expect(store.getChats().map((c) => c.jid)).toEqual([JID_B, JID_A]);
     expect(store.getChat(JID_B)?.messages[0]?.text).toBe("hi there");
+  });
+
+  it("collapses a lid-keyed chat into its phone-jid twin instead of listing both", async () => {
+    // First-link scenario: history sync delivers the chat keyed by @lid (its
+    // message keys carry no alt-jid), then a live message reveals the phone
+    // jid. The DB folds the lid rows into the canonical chat; the in-memory
+    // list must follow instead of keeping a duplicate until restart.
+    const LID = "123450000000001@lid";
+    const PN = "5491133334444@s.whatsapp.net";
+
+    const world = fakeWorld([{ id: ACCOUNT_ID, name: "Main" }]);
+    const store = createAppStore(world.deps);
+    await store.init();
+    await store.selectAccount(ACCOUNT_ID);
+    const conn = world.connections[0];
+
+    conn.emit("messages", {
+      messages: [
+        {
+          key: { remoteJid: LID, fromMe: false, id: "h1" },
+          messageTimestamp: 5000,
+          pushName: "Bob",
+          message: { conversation: "from history" },
+        } as unknown as WAMessage,
+      ],
+      type: "notify",
+    });
+    await flush();
+    await flush();
+    expect(store.getChats().map((c) => c.jid)).toEqual([LID]);
+
+    conn.emit("messages", {
+      messages: [
+        {
+          key: { remoteJid: LID, remoteJidAlt: PN, fromMe: false, id: "m2" },
+          messageTimestamp: 6000,
+          pushName: "Bob",
+          message: { conversation: "live" },
+        } as unknown as WAMessage,
+      ],
+      type: "notify",
+    });
+    await flush();
+    await flush();
+
+    expect(store.getChats().map((c) => c.jid)).toEqual([PN]);
+    expect(store.getChat(PN)?.messages.map((m) => m.text)).toEqual(["from history", "live"]);
   });
 
   it("on logged-out: removes only the creds, keeps chat data, and returns to the selector", async () => {
