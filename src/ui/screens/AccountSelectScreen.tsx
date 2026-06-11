@@ -41,7 +41,7 @@ export function AccountSelectScreen() {
 
   return (
     <box style={{ flexGrow: 1, flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
-      <text {...theme.accent}>wa-chat — Choose an account</text>
+      <text {...theme.accent}>whatsapp-terminal — Choose an account</text>
       <box style={{ marginTop: 1, flexDirection: "column" }}>
         {accounts.map((account, index) => {
           const selected = index === clampedIndex;

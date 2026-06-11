@@ -13,15 +13,15 @@ let tmpDir: string;
 let originalDataDir: string | undefined;
 
 beforeEach(async () => {
-  tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "wa-chat-send-"));
-  originalDataDir = process.env.WA_CHAT_DATA_DIR;
-  process.env.WA_CHAT_DATA_DIR = tmpDir;
+  tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "whatsapp-terminal-send-"));
+  originalDataDir = process.env.WHATSAPP_TERMINAL_DATA_DIR;
+  process.env.WHATSAPP_TERMINAL_DATA_DIR = tmpDir;
   setActiveAccount("test-account@s.whatsapp.net");
 });
 
 afterEach(async () => {
-  if (originalDataDir === undefined) delete process.env.WA_CHAT_DATA_DIR;
-  else process.env.WA_CHAT_DATA_DIR = originalDataDir;
+  if (originalDataDir === undefined) delete process.env.WHATSAPP_TERMINAL_DATA_DIR;
+  else process.env.WHATSAPP_TERMINAL_DATA_DIR = originalDataDir;
   setActiveAccount(null);
   await fs.rm(tmpDir, { recursive: true, force: true });
 });

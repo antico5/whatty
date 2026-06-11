@@ -11,16 +11,16 @@ import { dataDir } from "./persistence/paths.js";
  * Lazily created on first use (not at import time) so merely importing this
  * module — e.g. transitively through chatStore in tests — never creates
  * `data/` as a side effect; the destination path is resolved against
- * `dataDir()` on first call, respecting `WA_CHAT_DATA_DIR` overrides.
+ * `dataDir()` on first call, respecting `WHATSAPP_TERMINAL_DATA_DIR` overrides.
  */
 let instance: pino.Logger | undefined;
 
 export function getLogger(): pino.Logger {
   if (!instance) {
-    const logFile = path.join(dataDir(), "wa-chat.log");
+    const logFile = path.join(dataDir(), "whatsapp-terminal.log");
     fs.mkdirSync(path.dirname(logFile), { recursive: true });
     instance = pino(
-      { level: process.env.WA_CHAT_LOG_LEVEL ?? "info" },
+      { level: process.env.WHATSAPP_TERMINAL_LOG_LEVEL ?? "info" },
       pino.destination({ dest: logFile, sync: false }),
     );
   }

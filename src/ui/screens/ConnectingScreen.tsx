@@ -8,7 +8,7 @@ import { theme } from "../theme.js";
 export function ConnectingScreen() {
   return (
     <box style={{ flexGrow: 1, flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
-      <text {...theme.accent}>wa-chat</text>
+      <text {...theme.accent}>whatsapp-terminal</text>
       <text {...theme.meta}>Connecting to WhatsApp…</text>
     </box>
   );

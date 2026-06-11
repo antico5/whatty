@@ -1,4 +1,4 @@
-# wa-chat
+# whatsapp-terminal
 
 A terminal UI WhatsApp client — like WhatsApp Web, but in your terminal. Built on
 [Baileys](https://github.com/WhiskeySockets/Baileys) and [OpenTUI](https://github.com/sst/opentui)
@@ -44,14 +44,14 @@ re-links later via QR, the account reappears in the selector and resumes its pre
 ## Where data is stored
 
 Everything lives under a `data/` directory created alongside wherever you run the app
-(override the location with the `WA_CHAT_DATA_DIR` environment variable):
+(override the location with the `WHATSAPP_TERMINAL_DATA_DIR` environment variable):
 
 | Path | Contents |
 | --- | --- |
 | `data/accounts/<id>/auth/` | Baileys session credentials for one account |
 | `data/accounts/<id>/chats/<jid>/chats.json` | Full record for one chat: metadata, messages, delivery/deleted state |
 | `data/accounts/<id>/chats/<jid>/media/` | Downloaded media (images, video, audio, documents, stickers, view-once) |
-| `data/wa-chat.log` | Application log (structured JSON via pino — set `WA_CHAT_LOG_LEVEL` to adjust verbosity, e.g. `debug`) |
+| `data/whatsapp-terminal.log` | Application log (structured JSON via pino — set `WHATSAPP_TERMINAL_LOG_LEVEL` to adjust verbosity, e.g. `debug`) |
 
 `<id>` is the account's own normalized WhatsApp JID (e.g. `12025550100@s.whatsapp.net`).
 `<jid>` is the chat's WhatsApp ID — a phone number for 1:1 chats or a group ID

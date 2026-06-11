@@ -33,7 +33,7 @@ export function getActiveAccount(): string | null {
 }
 
 export function dataDir(): string {
-  return process.env.WA_CHAT_DATA_DIR ?? path.resolve(process.cwd(), "data");
+  return process.env.WHATSAPP_TERMINAL_DATA_DIR ?? path.resolve(process.cwd(), "data");
 }
 
 export function accountsRootDir(): string {

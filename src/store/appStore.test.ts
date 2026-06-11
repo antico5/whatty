@@ -17,15 +17,15 @@ let originalDataDir: string | undefined;
 const ACCOUNT_ID = "999999999@s.whatsapp.net";
 
 beforeEach(async () => {
-  tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "wa-chat-store-"));
-  originalDataDir = process.env.WA_CHAT_DATA_DIR;
-  process.env.WA_CHAT_DATA_DIR = tmpDir;
+  tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "whatsapp-terminal-store-"));
+  originalDataDir = process.env.WHATSAPP_TERMINAL_DATA_DIR;
+  process.env.WHATSAPP_TERMINAL_DATA_DIR = tmpDir;
   setActiveAccount(null);
 });
 
 afterEach(async () => {
-  if (originalDataDir === undefined) delete process.env.WA_CHAT_DATA_DIR;
-  else process.env.WA_CHAT_DATA_DIR = originalDataDir;
+  if (originalDataDir === undefined) delete process.env.WHATSAPP_TERMINAL_DATA_DIR;
+  else process.env.WHATSAPP_TERMINAL_DATA_DIR = originalDataDir;
   setActiveAccount(null);
   await fs.rm(tmpDir, { recursive: true, force: true });
 });
