@@ -1,0 +1,13 @@
+{
+  "key": { "remoteJid": "123456789@s.whatsapp.net", "fromMe": false, "id": "IMG0001" },
+  "messageTimestamp": 1700000100,
+  "pushName": "Alice",
+  "message": {
+    "imageMessage": {
+      "mimetype": "image/jpeg",
+      "caption": "Check this out",
+      "url": "https://example.com/x.enc",
+      "mediaKey": "base64keydata"
+    }
+  }
+}

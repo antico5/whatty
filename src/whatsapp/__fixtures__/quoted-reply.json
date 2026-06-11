@@ -1,0 +1,15 @@
+{
+  "key": { "remoteJid": "123456789@s.whatsapp.net", "fromMe": true, "id": "REPLY0001" },
+  "messageTimestamp": 1700000200,
+  "status": 2,
+  "message": {
+    "extendedTextMessage": {
+      "text": "Sounds good!",
+      "contextInfo": {
+        "stanzaId": "ABCD1234",
+        "participant": "123456789@s.whatsapp.net",
+        "quotedMessage": { "conversation": "Hello there!" }
+      }
+    }
+  }
+}

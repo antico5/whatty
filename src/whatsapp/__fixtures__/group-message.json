@@ -1,0 +1,13 @@
+{
+  "key": {
+    "remoteJid": "123456-789@g.us",
+    "fromMe": false,
+    "id": "GRPMSG01",
+    "participant": "987654321@s.whatsapp.net"
+  },
+  "messageTimestamp": 1700000300,
+  "pushName": "Bob",
+  "message": {
+    "conversation": "Hey everyone"
+  }
+}

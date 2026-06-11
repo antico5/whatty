@@ -1,0 +1,18 @@
+{
+  "key": { "remoteJid": "123456789@s.whatsapp.net", "fromMe": false, "id": "VO0001" },
+  "messageTimestamp": 1700000400,
+  "pushName": "Alice",
+  "message": {
+    "viewOnceMessageV2": {
+      "message": {
+        "imageMessage": {
+          "mimetype": "image/jpeg",
+          "caption": null,
+          "url": "https://example.com/vo.enc",
+          "mediaKey": "base64keydata",
+          "viewOnce": true
+        }
+      }
+    }
+  }
+}

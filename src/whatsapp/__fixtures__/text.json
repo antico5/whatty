@@ -1,0 +1,8 @@
+{
+  "key": { "remoteJid": "123456789@s.whatsapp.net", "fromMe": false, "id": "ABCD1234" },
+  "messageTimestamp": 1700000000,
+  "pushName": "Alice",
+  "message": {
+    "conversation": "Hello there!"
+  }
+}

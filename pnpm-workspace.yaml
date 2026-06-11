@@ -1,0 +1,10 @@
+blockExoticSubdeps: false
+
+allowBuilds:
+  baileys: true
+  esbuild: true
+  protobufjs: true
+  sharp: true
+
+patchedDependencies:
+  baileys@7.0.0-rc13: patches/baileys@7.0.0-rc13.patch

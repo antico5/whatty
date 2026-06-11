@@ -1,0 +1,128 @@
+diff --git a/lib/Utils/process-message.js b/lib/Utils/process-message.js
+index 37449dbf5ea239040b10828e8c76753ae0c0060c..fda2c0db9d3e56eb226dad17f85571894a45ea54 100644
+--- a/lib/Utils/process-message.js
++++ b/lib/Utils/process-message.js
+@@ -183,6 +183,35 @@ export function decryptEventResponse({ encPayload, encIv }, { eventCreatorJid, e
+         return Buffer.from(txt);
+     }
+ }
++function decryptMessageEdit({ encPayload, encIv }, { originalSenderJid, originalMsgId, editEncKey, editorJid }) {
++    if (!encIv || encIv.length !== 12) {
++        throw new Error(`Invalid MESSAGE_EDIT IV length: expected 12, got ${encIv?.length ?? 0}`);
++    }
++    const sign = Buffer.concat([
++        Buffer.from(originalMsgId),
++        Buffer.from(originalSenderJid),
++        Buffer.from(editorJid),
++        Buffer.from('Message Edit'),
++        new Uint8Array([1])
++    ]);
++    const key0 = hmacSign(editEncKey, new Uint8Array(32), 'sha256');
++    const decKey = hmacSign(sign, key0, 'sha256');
++    const decrypted = aesDecryptGCM(encPayload, decKey, encIv, Buffer.alloc(0));
++    return proto.Message.decode(decrypted);
++}
++async function alternateAddressing(jid, signalRepository) {
++    try {
++        if (isLidUser(jid)) {
++            const pn = await signalRepository.lidMapping.getPNForLID(jid);
++            return pn ? jidNormalizedUser(pn) : null;
++        }
++        const lid = await signalRepository.lidMapping.getLIDForPN(jid);
++        return lid ? jidNormalizedUser(lid) : null;
++    }
++    catch {
++        return null;
++    }
++}
+ const processMessage = async (message, { shouldProcessHistoryMsg, placeholderResendCache, ev, creds, signalRepository, keyStore, logger, options, getMessage }) => {
+     const meId = creds.me.id;
+     const { accountSettings } = creds;
+@@ -469,6 +498,87 @@ const processMessage = async (message, { shouldProcessHistoryMsg, placeholderRes
+             logger?.warn({ creationMsgKey }, 'event creation message not found, cannot decrypt response');
+         }
+     }
++    else if (content?.secretEncryptedMessage &&
++        content.secretEncryptedMessage.secretEncType === proto.Message.SecretEncryptedMessage.SecretEncType.MESSAGE_EDIT) {
++        const encrypted = content.secretEncryptedMessage;
++        const targetKey = encrypted.targetMessageKey;
++        if (!targetKey?.id || !encrypted.encPayload?.length || encrypted.encIv?.length !== 12) {
++            logger?.warn({ targetKey }, 'MESSAGE_EDIT envelope is missing its target, payload, or 12-byte IV');
++        }
++        else {
++            const targetMessage = await getMessage(targetKey);
++            const editEncKey = targetMessage?.messageContextInfo?.messageSecret;
++            if (!targetMessage) {
++                logger?.warn({ targetKey }, 'original message not found, cannot decrypt MESSAGE_EDIT');
++            }
++            else if (!editEncKey) {
++                logger?.warn({ targetKey }, 'original message has no messageSecret, cannot decrypt MESSAGE_EDIT');
++            }
++            else {
++                try {
++                    const meIdNormalised = jidNormalizedUser(meId);
++                    const envelopeAuthor = message.key.fromMe
++                        ? meIdNormalised
++                        : message.key.participant || message.key.remoteJid;
++                    const originalSender = targetKey.participant ||
++                        (targetKey.fromMe ? envelopeAuthor : targetKey.remoteJid);
++                    const primary = {
++                        originalSenderJid: jidNormalizedUser(originalSender),
++                        editorJid: jidNormalizedUser(envelopeAuthor)
++                    };
++                    const altOriginal = await alternateAddressing(primary.originalSenderJid, signalRepository);
++                    const altEditor = await alternateAddressing(primary.editorJid, signalRepository);
++                    const attempts = [
++                        primary,
++                        altOriginal || altEditor
++                            ? {
++                                originalSenderJid: altOriginal ?? primary.originalSenderJid,
++                                editorJid: altEditor ?? primary.editorJid
++                            }
++                            : null
++                    ].filter(Boolean);
++                    let decoded;
++                    let decryptError;
++                    for (const attempt of attempts) {
++                        try {
++                            decoded = decryptMessageEdit(encrypted, {
++                                editEncKey,
++                                originalMsgId: targetKey.id,
++                                ...attempt
++                            });
++                            break;
++                        }
++                        catch (err) {
++                            decryptError = err;
++                        }
++                    }
++                    const editProtocol = decoded?.protocolMessage;
++                    const editedMessage = editProtocol?.editedMessage;
++                    if (!editedMessage) {
++                        throw decryptError ?? new Error('decrypted MESSAGE_EDIT has no editedMessage');
++                    }
++                    ev.emit('messages.update', [
++                        {
++                            key: { ...message.key, id: targetKey.id },
++                            update: {
++                                message: {
++                                    editedMessage: {
++                                        message: editedMessage
++                                    }
++                                },
++                                messageTimestamp: editProtocol.timestampMs
++                                    ? Math.floor(toNumber(editProtocol.timestampMs) / 1000)
++                                    : message.messageTimestamp
++                            }
++                        }
++                    ]);
++                }
++                catch (err) {
++                    logger?.warn({ err, targetKey }, 'failed to decrypt MESSAGE_EDIT');
++                }
++            }
++        }
++    }
+     else if (message.messageStubType) {
+         const jid = message.key?.remoteJid;
+         //let actor = whatsappID (message.participant)
