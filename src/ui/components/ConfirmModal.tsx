@@ -43,32 +43,41 @@ export function ConfirmModal({ message, onConfirm, onCancel }: ConfirmModalProps
 
   return (
     <box
-      backgroundColor="black"
-      border={true}
-      borderStyle="single"
-      borderColor="cyan"
-      maxWidth={80}
       style={{
         position: "absolute",
-        top: "25%",
-        left: "10%",
-        width: "80%",
-        flexDirection: "column",
+        top: 0,
+        left: 0,
+        width: "100%",
+        height: "100%",
         alignItems: "center",
-        padding: 2,
+        justifyContent: "center",
       }}
     >
-      <box style={{ flexDirection: "column", alignItems: "center", padding: 1 }}>
-        {lines.map((line, i) => (
-          <text key={i} {...theme.failed}>{line}</text>
-        ))}
-        <box style={{ marginTop: 1, flexDirection: "row" }}>
-          <text {...noStyle}>{selected === 0 ? "[ No ]" : "  No  "}</text>
-          <text>{"   "}</text>
-          <text {...yesStyle}>{selected === 1 ? "[ Yes ]" : "  Yes  "}</text>
-        </box>
-        <box style={{ marginTop: 1 }}>
-          <text {...theme.meta}>←/→ to choose, Enter to confirm, Esc = No</text>
+      <box
+        backgroundColor="black"
+        border={true}
+        borderStyle="single"
+        borderColor="cyan"
+        maxWidth={80}
+        style={{
+          width: "80%",
+          flexDirection: "column",
+          alignItems: "center",
+          padding: 2,
+        }}
+      >
+        <box style={{ flexDirection: "column", alignItems: "center", padding: 1 }}>
+          {lines.map((line, i) => (
+            <text key={i} {...theme.failed}>{line}</text>
+          ))}
+          <box style={{ marginTop: 1, flexDirection: "row" }}>
+            <text {...noStyle}>{selected === 0 ? "[ No ]" : "  No  "}</text>
+            <text>{"   "}</text>
+            <text {...yesStyle}>{selected === 1 ? "[ Yes ]" : "  Yes  "}</text>
+          </box>
+          <box style={{ marginTop: 1 }}>
+            <text {...theme.meta}>←/→ to choose, Enter to confirm, Esc = No</text>
+          </box>
         </box>
       </box>
     </box>
