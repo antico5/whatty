@@ -12,8 +12,6 @@ for the WA protocol. **Runs under Bun** (`bun src/index.ts`); tests run under
 | Command          | What it does                     |
 | ---------------- | -------------------------------- |
 | `pnpm start`     | Run the app (Bun)                |
-| `pnpm dev`       | Run with `--watch` (Bun)         |
-| `pnpm test`      | Run test suite (vitest/Node)     |
 | `pnpm typecheck` | Type-check only (`tsc --noEmit`) |
 
 ## Architecture
@@ -22,6 +20,11 @@ for the WA protocol. **Runs under Bun** (`bun src/index.ts`); tests run under
 - `src/persistence/` — SQLite stores (`chatStore.ts`, `accounts.ts`), `paths.ts`, `mediaStore.ts`, `storageActions.ts`
 - `src/store/appStore.ts` — app state machine + React context (single source of truth for UI)
 - `src/ui/` — screens and components; `MessageItem.tsx` owns layout math
+
+## Testing policy
+
+**Do not write, read, or run tests.** Ignore all `*.test.ts` / `*.spec.ts`
+files — they are excluded from `tsconfig.json` and should not be touched.
 
 ## Hard invariants
 
