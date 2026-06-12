@@ -45,6 +45,9 @@ export interface Message {
   deletedAt: number | null;
   /** Text was replaced by a later MESSAGE_EDIT — rendered as "(edited)". Optional so pre-existing persisted messages need no migration. */
   edited?: boolean;
+  /** Derived at load (never persisted): `@`-mention jids resolved to display labels,
+   * so the UI can substitute `@<digits>` tokens — lid digits aren't phone numbers. */
+  mentions?: { jid: string; label: string }[];
   reactions?: { emoji: string; sender: string }[];
   raw: unknown;
 }

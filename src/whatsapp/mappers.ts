@@ -257,6 +257,20 @@ function mapQuoted(contextInfo: proto.IContextInfo | null | undefined): QuotedRe
   };
 }
 
+/**
+ * Jids tagged via `@`-mentions, carried by the message's contextInfo. These are
+ * the exact addresses the sender tagged — in lid-addressed groups they're `@lid`
+ * jids whose digits match the `@<digits>` tokens in the text, so resolving the
+ * tokens to names requires this list (the digits aren't phone numbers).
+ */
+export function mentionedJidsOf(message: Pick<Message, "raw">): string[] {
+  const waMsg = rawWAMessage(message);
+  if (!waMsg) return [];
+  const entry = contentEntry(normalizeMessageContent(waMsg.message));
+  const contextInfo = innerObject(entry)?.contextInfo as proto.IContextInfo | null | undefined;
+  return (contextInfo?.mentionedJid ?? []).filter((j): j is string => Boolean(j));
+}
+
 function mapReactions(reactions: proto.IReaction[] | null | undefined): { emoji: string; sender: string }[] | undefined {
   if (!reactions || reactions.length === 0) return undefined;
   const mapped = reactions

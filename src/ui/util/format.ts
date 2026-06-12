@@ -238,13 +238,24 @@ export function formatBytes(bytes: number): string {
  * Label priority matches `GroupParticipant.displayName`: contactName → verifiedName
  * → pushName → `+phonedigits` derived from the JID.
  */
-export function resolveMentions(text: string, participants: GroupParticipant[]): string {
+export function resolveMentions(
+  text: string,
+  mentions: { jid: string; label: string }[] | undefined,
+  participants: GroupParticipant[],
+): string {
   const byDigits = new Map<string, string>();
   for (const p of participants) {
     if (!p.jid.endsWith("@s.whatsapp.net")) continue;
     const digits = p.jid.split("@")[0];
     if (!digits) continue;
     byDigits.set(digits, p.displayName ?? `+${digits}`);
+  }
+  // The message's own mentioned-jid list wins over the participant fallback —
+  // in lid-addressed groups the token digits are lid digits, which only this
+  // list can match (a lid is not a phone number).
+  for (const m of mentions ?? []) {
+    const digits = m.jid.split("@")[0]?.split(":")[0];
+    if (digits) byDigits.set(digits, m.label);
   }
   if (!byDigits.size) return text;
   return text.replace(/@(\d+)/g, (match, digits: string) => {

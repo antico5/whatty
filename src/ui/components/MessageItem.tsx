@@ -54,7 +54,7 @@ function layoutLines(message: Message, chat: Chat, maxWidth: number): LineData[]
 
   const resolvedText =
     chat.type === "group" && message.text
-      ? resolveMentions(message.text, chat.participants)
+      ? resolveMentions(message.text, message.mentions, chat.participants)
       : message.text;
 
   if (message.media) {

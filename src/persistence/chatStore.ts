@@ -8,7 +8,7 @@ import {
   type Message,
   type QuotedRef,
 } from "../types/index.js";
-import { mapWAMessage, rawWAMessage } from "../whatsapp/mappers.js";
+import { mapWAMessage, mentionedJidsOf, rawWAMessage } from "../whatsapp/mappers.js";
 import { advanceDeliveryStatus, mergeChatMeta, tombstone, upsertChat } from "./reconcile.js";
 import { getActiveDb, type AccountDb } from "./db.js";
 import {
@@ -179,6 +179,16 @@ function messageFromRow(
   };
   if (row.edited) message.edited = true;
   if (reactions && reactions.length > 0) message.reactions = reactions;
+  if (isGroup && row.text?.includes("@")) {
+    // `@`-mention digits in group text reference jids (often `@lid`), not phone
+    // numbers — resolve each mentioned jid to its account's label so the UI can
+    // substitute the tokens. Unresolvable jids are omitted (token renders raw).
+    const mentions = mentionedJidsOf(message).flatMap((jid) => {
+      const account = accountByJid(ctx.db, jid);
+      return account ? [{ jid, label: senderLabel(account, ctx.selfId) }] : [];
+    });
+    if (mentions.length > 0) message.mentions = mentions;
+  }
   return message;
 }
 
