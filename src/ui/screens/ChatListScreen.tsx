@@ -11,7 +11,7 @@ const ROWS_PER_ENTRY = 2;
 /** One row at the bottom is reserved for the shared status bar (rendered by App.tsx). */
 const FOOTER_ROWS = 1;
 
-export function ChatListScreen() {
+export function ChatListScreen({ initialSelectedJid }: { initialSelectedJid?: string | null }) {
   const chats = useChats();
   const navigation = useNavigation();
   const store = useAppStore();
@@ -20,7 +20,7 @@ export function ChatListScreen() {
   const width = layoutWidth(terminalWidth);
 
   // Tracked by jid (not index) so the highlighted row follows the same chat across re-sorts.
-  const [selectedJid, setSelectedJid] = useState<string | null>(null);
+  const [selectedJid, setSelectedJid] = useState<string | null>(initialSelectedJid ?? null);
   // When true the ConfirmModal is shown and the list keyboard is suppressed.
   const [confirmingExit, setConfirmingExit] = useState(false);
 

@@ -33,11 +33,13 @@ function Router(): ReactNode {
   // back to the account selector) resets it for whichever account comes next.
   const [hasOpened, setHasOpened] = useState(connectionState === "open");
   const [activeJid, setActiveJid] = useState<string | null>(null);
+  const [lastSelectedJid, setLastSelectedJid] = useState<string | null>(null);
 
   useEffect(() => {
     if (phase !== "session" || connectionState === "logged-out") {
       setHasOpened(false);
       setActiveJid(null);
+      setLastSelectedJid(null);
     } else if (connectionState === "open") {
       setHasOpened(true);
     }
@@ -50,9 +52,12 @@ function Router(): ReactNode {
         setActiveJid(jid);
         store.refreshGroupIfNeeded(jid);
       },
-      back: () => setActiveJid(null),
+      back: () => {
+        setLastSelectedJid(activeJid);
+        setActiveJid(null);
+      },
     }),
-    [store],
+    [store, activeJid],
   );
 
   let body: ReactNode;
@@ -66,7 +71,7 @@ function Router(): ReactNode {
     body = (
       <box style={{ flexGrow: 1, flexDirection: "row", justifyContent: "center" }}>
         <box style={{ flexGrow: 1, maxWidth: LAYOUT_MAX_WIDTH, flexDirection: "column" }}>
-          {activeJid !== null ? <ChatViewScreen jid={activeJid} /> : <ChatListScreen />}
+          {activeJid !== null ? <ChatViewScreen jid={activeJid} /> : <ChatListScreen initialSelectedJid={lastSelectedJid} />}
           <StatusBar />
         </box>
       </box>
