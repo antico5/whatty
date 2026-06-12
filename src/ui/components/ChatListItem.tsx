@@ -35,6 +35,8 @@ function lastMessagePreview(chat: Chat): LastMessagePreview | null {
   if (!last) return null;
   if (last.text) return { direction: last.direction, text: last.text };
   if (last.media) return { direction: last.direction, text: mediaTypeLabel(last.type) };
+  const MEDIA_TYPES = new Set<string>(["image", "video", "audio", "document", "sticker", "viewOnce"]);
+  if (MEDIA_TYPES.has(last.type)) return { direction: last.direction, text: mediaTypeLabel(last.type) };
   return { direction: last.direction, text: "" };
 }
 
