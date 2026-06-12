@@ -112,6 +112,15 @@ could trigger a manual download later — the server-side URL will likely have e
 time a fresh device link completes its history sync. This is by design: the cutoff exists
 precisely to avoid pulling years of unreachable media.
 
+## Business & interactive messages
+
+Template, button and list messages sent by business accounts (the kind the phone renders
+with tappable buttons) are shown as plain text: title, body and footer lines followed by
+one `[label]` line per button — `[label: url]` for link buttons. The buttons themselves
+aren't interactive. On startup the app re-examines stored messages that had no renderable
+text and backfills them, so business chats that previously showed empty entries populate
+retroactively.
+
 ## v1 scope & limitations
 
 - **Outbound: text only.** Sending media, replies, and reactions isn't supported yet

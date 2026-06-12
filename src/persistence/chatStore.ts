@@ -8,6 +8,7 @@ import {
   type Message,
   type QuotedRef,
 } from "../types/index.js";
+import { mapWAMessage, rawWAMessage } from "../whatsapp/mappers.js";
 import { advanceDeliveryStatus, mergeChatMeta, tombstone, upsertChat } from "./reconcile.js";
 import { getActiveDb, type AccountDb } from "./db.js";
 import {
@@ -455,6 +456,38 @@ export async function loadAllChats(): Promise<Chat[]> {
     shell.messages = loadMessages(ctx, row.id, shell.type === "group");
     return shell;
   });
+}
+
+/**
+ * Re-derive `type`/`text` from the persisted raw envelope for rows saved
+ * before the mapper understood their content (e.g. business template/button
+ * messages stored as "other" with no text). Runs at startup, idempotent:
+ * rows the mapper still can't extract text from are left untouched and
+ * re-examined on the next start. Returns the number of repaired rows.
+ */
+export async function backfillTextFromRaw(): Promise<number> {
+  const db = await getActiveDb();
+  const rows = db.sql
+    .prepare<Pick<MessageRow, "chat_id" | "id" | "sender_account_id" | "raw">>(
+      "SELECT chat_id, id, sender_account_id, raw FROM messages WHERE type = 'other' AND text IS NULL AND raw IS NOT NULL",
+    )
+    .all();
+  if (rows.length === 0) return 0;
+  const update = db.sql.prepare(
+    "UPDATE messages SET type = ?, text = ? WHERE chat_id = ? AND id = ? AND sender_account_id = ?",
+  );
+  let repaired = 0;
+  db.transaction(() => {
+    for (const row of rows) {
+      const waMsg = rawWAMessage({ raw: parseJson(row.raw) });
+      if (!waMsg) continue;
+      const mapped = mapWAMessage(waMsg);
+      if (mapped.text == null) continue;
+      update.run(mapped.type, mapped.text, row.chat_id, row.id, row.sender_account_id);
+      repaired += 1;
+    }
+  });
+  return repaired;
 }
 
 // ── targeted tier: chatOps ──────────────────────────────────────────────────

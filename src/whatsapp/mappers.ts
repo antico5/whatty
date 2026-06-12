@@ -122,7 +122,100 @@ export function messageType(waMsg: WAMessage): MessageType {
   if (isViewOnce(waMsg)) return "viewOnce";
 
   if (entry.key === "conversation" || entry.key === "extendedTextMessage") return "text";
-  return mediaTypeForKey(entry.key) ?? "other";
+  const mediaType = mediaTypeForKey(entry.key);
+  if (mediaType) return mediaType;
+  return businessTextOf(entry) != null ? "text" : "other";
+}
+
+function joinLines(...parts: (string | null | undefined)[]): string | null {
+  const lines = parts.filter((p): p is string => typeof p === "string" && p.length > 0);
+  return lines.length > 0 ? lines.join("\n") : null;
+}
+
+/** One rendered button: `[label]`, or `[label: target]` for url/call buttons. */
+function buttonLine(label: string | null | undefined, target?: string | null): string | null {
+  if (!label) return null;
+  return target ? `[${label}: ${target}]` : `[${label}]`;
+}
+
+function hydratedButtonLine(btn: proto.IHydratedTemplateButton): string | null {
+  if (btn.urlButton) return buttonLine(btn.urlButton.displayText, btn.urlButton.url);
+  if (btn.callButton) return buttonLine(btn.callButton.displayText, btn.callButton.phoneNumber);
+  return buttonLine(btn.quickReplyButton?.displayText);
+}
+
+function nativeFlowButtonLine(
+  btn: proto.Message.InteractiveMessage.NativeFlowMessage.INativeFlowButton,
+): string | null {
+  let params: { display_text?: string; url?: string } = {};
+  try {
+    params = JSON.parse(btn.buttonParamsJson ?? "{}") as typeof params;
+  } catch {
+    // opaque flow params — fall back to the flow name below
+  }
+  return buttonLine(params.display_text ?? btn.name, params.url);
+}
+
+/** `InteractiveMessage` body — also embedded in `templateMessage.interactiveMessageTemplate`. */
+function interactiveTextOf(m: proto.Message.IInteractiveMessage): string | null {
+  return joinLines(
+    m.header?.title,
+    m.header?.subtitle,
+    m.body?.text,
+    m.footer?.text,
+    ...(m.nativeFlowMessage?.buttons ?? []).map(nativeFlowButtonLine),
+  );
+}
+
+/**
+ * Text carried by business/interactive content (template, buttons, list and
+ * interactive messages plus their reply types). These have no `conversation`
+ * body — the phone renders title/body/footer with tappable buttons — so we
+ * flatten them to lines, buttons rendered as `[label]` / `[label: url]`.
+ */
+function businessTextOf(entry: ContentEntry): string | null {
+  const inner = innerObject(entry);
+  if (!inner) return null;
+  switch (entry.key) {
+    case "templateMessage": {
+      const tm = entry.value as proto.Message.ITemplateMessage;
+      const t = tm.hydratedTemplate ?? tm.hydratedFourRowTemplate;
+      if (!t) {
+        return tm.interactiveMessageTemplate ? interactiveTextOf(tm.interactiveMessageTemplate) : null;
+      }
+      return joinLines(
+        t.hydratedTitleText,
+        t.hydratedContentText,
+        t.hydratedFooterText,
+        ...(t.hydratedButtons ?? []).map(hydratedButtonLine),
+      );
+    }
+    case "buttonsMessage": {
+      const m = entry.value as proto.Message.IButtonsMessage;
+      return joinLines(
+        m.text,
+        m.contentText,
+        m.footerText,
+        ...(m.buttons ?? []).map((b) => buttonLine(b.buttonText?.displayText)),
+      );
+    }
+    case "listMessage": {
+      const m = entry.value as proto.Message.IListMessage;
+      return joinLines(m.title, m.description, m.footerText, buttonLine(m.buttonText));
+    }
+    case "interactiveMessage":
+      return interactiveTextOf(entry.value as proto.Message.IInteractiveMessage);
+    case "templateButtonReplyMessage":
+      return (entry.value as proto.Message.ITemplateButtonReplyMessage).selectedDisplayText ?? null;
+    case "buttonsResponseMessage": {
+      const m = entry.value as proto.Message.IButtonsResponseMessage;
+      return m.selectedDisplayText ?? m.selectedButtonId ?? null;
+    }
+    case "listResponseMessage":
+      return (entry.value as proto.Message.IListResponseMessage).title ?? null;
+    default:
+      return null;
+  }
 }
 
 function textOf(entry: ContentEntry | null): string | null {
@@ -134,6 +227,8 @@ function textOf(entry: ContentEntry | null): string | null {
   if (entry.key === "extendedTextMessage") {
     return typeof inner?.text === "string" ? inner.text : null;
   }
+  const business = businessTextOf(entry);
+  if (business != null) return business;
   return typeof inner?.caption === "string" ? inner.caption : null;
 }
 

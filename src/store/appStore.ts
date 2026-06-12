@@ -6,7 +6,11 @@ import {
   removeAccountCreds as defaultRemoveAccountCreds,
   type AccountInfo,
 } from "../persistence/accounts.js";
-import { loadAllChats as defaultLoadAllChats, loadChat as defaultLoadChat } from "../persistence/chatStore.js";
+import {
+  backfillTextFromRaw,
+  loadAllChats as defaultLoadAllChats,
+  loadChat as defaultLoadChat,
+} from "../persistence/chatStore.js";
 import { closeActiveDb, getActiveDb, pruneEvents } from "../persistence/db.js";
 import { getDiskUsage as defaultGetDiskUsage, type DiskUsage } from "../persistence/diskUsage.js";
 import { acquireInstanceLock, type InstanceLock } from "../persistence/instanceLock.js";
@@ -253,6 +257,15 @@ export function createAppStore(deps: Partial<AppStoreDeps> = {}): AppStore {
       pruneEvents(await getActiveDb());
     } catch (err) {
       log.error({ err, accountId }, "failed to prune the events ring buffer");
+    }
+
+    // Repair rows persisted before the mapper understood their content type
+    // (e.g. business template messages); best-effort, never blocks startup.
+    try {
+      const repaired = await backfillTextFromRaw();
+      if (repaired > 0) log.info({ repaired, accountId }, "backfilled message text from raw payloads");
+    } catch (err) {
+      log.error({ err, accountId }, "failed to backfill message text from raw payloads");
     }
 
     chats = sortByLastActivity(await loadAllChats());
