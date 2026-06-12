@@ -74,6 +74,19 @@ deletes its credentials (`auth/`); chat history and media are never touched.
 | `Ctrl+C` | Quit the app | Quit the app | Quit the app |
 | _(typing)_ | — | — | Edits the draft input (navigation keys above still work) |
 
+## Media auto-download
+
+Media attached to messages is downloaded automatically — but only for messages received
+within the **last 7 days**. Older messages (e.g. from a fresh history sync on a newly
+linked device) are skipped; their entry in the chat view shows a `[type — not downloaded]`
+hint instead of a file path.
+
+**Re-fetchability caveat:** WhatsApp media URLs expire within roughly the same 7-day window.
+Messages skipped by the auto-download gate may be permanently unrecoverable, even if you
+could trigger a manual download later — the server-side URL will likely have expired by the
+time a fresh device link completes its history sync. This is by design: the cutoff exists
+precisely to avoid pulling years of unreachable media.
+
 ## v1 scope & limitations
 
 - **Outbound: text only.** Sending media, replies, and reactions isn't supported yet

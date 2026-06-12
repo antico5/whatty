@@ -1,9 +1,10 @@
+import os from "node:os";
 import path from "node:path";
 
 /**
  * On-disk layout (multi-account):
  *
- *   data/
+ *   <dataDir>/
  *     accounts/
  *       <accountId>/        ← normalized own JID, e.g. `5491100000000@s.whatsapp.net`
  *         chats.db          ← SQLite: chats, messages, aliases, auth_kv, events
@@ -21,6 +22,34 @@ import path from "node:path";
  * (or finishes linking) an account.
  */
 
+/** App name used as the data-directory leaf on every platform. */
+const APP_DIR_NAME = "whatsapp-terminal";
+
+/**
+ * Platform-native data directory for the app (inlined from the env-paths
+ * convention — no extra dependency needed):
+ *
+ * | OS      | Path                                                              |
+ * |---------|-------------------------------------------------------------------|
+ * | Linux   | `$XDG_DATA_HOME/whatsapp-terminal` → `~/.local/share/whatsapp-terminal` |
+ * | macOS   | `~/Library/Application Support/whatsapp-terminal`                 |
+ * | Windows | `%LOCALAPPDATA%\whatsapp-terminal\Data`                           |
+ */
+export function defaultDataDir(): string {
+  const home = os.homedir();
+  switch (process.platform) {
+    case "darwin":
+      return path.join(home, "Library", "Application Support", APP_DIR_NAME);
+    case "win32": {
+      const localAppData = process.env.LOCALAPPDATA ?? path.join(home, "AppData", "Local");
+      return path.join(localAppData, APP_DIR_NAME, "Data");
+    }
+    default:
+      // Linux and all other POSIX platforms: honour XDG_DATA_HOME
+      return path.join(process.env.XDG_DATA_HOME ?? path.join(home, ".local", "share"), APP_DIR_NAME);
+  }
+}
+
 let activeAccountId: string | null = null;
 
 export function setActiveAccount(id: string | null): void {
@@ -32,7 +61,7 @@ export function getActiveAccount(): string | null {
 }
 
 export function dataDir(): string {
-  return process.env.WHATSAPP_TERMINAL_DATA_DIR ?? path.resolve(process.cwd(), "data");
+  return process.env.WHATSAPP_TERMINAL_DATA_DIR ?? defaultDataDir();
 }
 
 export function accountsRootDir(): string {
@@ -61,4 +90,9 @@ function requireActiveAccount(): string {
 /** Flat media directory of the active account. */
 export function mediaDir(): string {
   return accountMediaDir(requireActiveAccount());
+}
+
+/** Path to the app-wide log file. */
+export function logFilePath(): string {
+  return path.join(dataDir(), "whatsapp-terminal.log");
 }

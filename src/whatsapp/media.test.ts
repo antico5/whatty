@@ -1,3 +1,6 @@
+// Run tests in UTC so timestamp-based filenames are deterministic across machines.
+process.env.TZ = "UTC";
+
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -17,6 +20,10 @@ import { downloadAndStore } from "./media.js";
 
 let tmpDir: string;
 let originalDataDir: string | undefined;
+
+// messageTimestamp: 1_700_000_000 s → 1_700_000_000_000 ms → 2023-11-14T22:13:20.000Z
+// format in UTC: 2023_11_14_22_13_20_000
+const TS_FMT = "2023_11_14_22_13_20_000";
 
 beforeEach(async () => {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "whatsapp-terminal-media-dl-"));
@@ -63,10 +70,11 @@ describe("downloadAndStore", () => {
     expect(downloadMediaMessage).not.toHaveBeenCalled();
   });
 
-  it("downloads and persists media on success", async () => {
+  it("downloads and persists media on success with a timestamp-based filename", async () => {
     vi.mocked(downloadMediaMessage).mockResolvedValueOnce(Buffer.from("image bytes"));
     const ref = await downloadAndStore(fakeConnection(), imageMessage("m2"), JID);
-    expect(ref?.relativePath).toBe("media/12345_s.whatsapp.net__m2.jpg");
+    // id "m2" is 2 chars < 8, full suffix = "m2"
+    expect(ref?.relativePath).toBe(`media/${TS_FMT}__m2.jpg`);
     const contents = await fs.readFile(absoluteMediaPath(ref!), "utf8");
     expect(contents).toBe("image bytes");
   });
@@ -83,7 +91,8 @@ describe("downloadAndStore", () => {
       .mockRejectedValueOnce(new Error("network blip"))
       .mockResolvedValueOnce(Buffer.from("retry bytes"));
     const ref = await downloadAndStore(fakeConnection(), imageMessage("m4"), JID);
-    expect(ref?.relativePath).toBe("media/12345_s.whatsapp.net__m4.jpg");
+    // id "m4" is 2 chars < 8, full suffix = "m4"
+    expect(ref?.relativePath).toBe(`media/${TS_FMT}__m4.jpg`);
     expect(downloadMediaMessage).toHaveBeenCalledTimes(2);
   });
 

@@ -56,14 +56,28 @@ describe("chatStore (whole-chat tier)", () => {
     chat.messages.push(
       textMessage("msg-1", {
         media: { relativePath: "media/x.jpg", mimeType: "image/jpeg", fileName: null },
-        quoted: { messageId: "q1", sender: JID, snippet: "earlier" },
+        // quoted.sender is a raw JID — at load time it is resolved via
+        // resolveSenderLabel, so the loaded chat will carry the display label,
+        // not the raw JID. Use the account's own JID here (→ "You") so the
+        // expected loaded value is predictable without needing a contact row.
+        quoted: { messageId: "q1", sender: "test-account@s.whatsapp.net", snippet: "earlier" },
         reactions: [{ emoji: "👍", sender: JID }],
       }),
     );
 
     await saveChat(chat);
     const loaded = await loadChat(JID);
-    expect(loaded).toEqual(chat);
+    // Quoted sender is resolved to "You" (own account JID → "You").
+    const expected = {
+      ...chat,
+      messages: [
+        {
+          ...chat.messages[0]!,
+          quoted: { messageId: "q1", sender: "You", snippet: "earlier" },
+        },
+      ],
+    };
+    expect(loaded).toEqual(expected);
   });
 
   it("round-trips a group with participants", async () => {
@@ -225,5 +239,128 @@ describe("chatOps (targeted tier)", () => {
     expect(found?.chatJid).toBe(JID);
     expect(found?.message.direction).toBe("outbound");
     expect(await chatOps.findMessageById("ghost")).toBeNull();
+  });
+});
+
+// ── req 5: quoted-reply sender resolution ────────────────────────────────────
+
+const OWN_JID = "test-account@s.whatsapp.net"; // matches setActiveAccount() in beforeEach
+const QUOTED_SENDER_JID = "9876543210@s.whatsapp.net"; // a peer (distinct from JID/LID)
+const GROUP_JID_Q = "group-q@g.us"; // use a separate group JID to avoid collisions
+
+/** Seed a minimal individual chat row so resolveSenderLabel can look it up.
+ *  Uses the active account DB directly via chatOps.mergeChatMeta. */
+async function seedContactChat(jid: string, displayName: string | null): Promise<void> {
+  await chatOps.mergeChatMeta(jid, { jid, type: "individual", displayName }, true);
+}
+
+describe("quoted-reply sender resolution (req 5)", () => {
+  it("resolves quoted.sender JID to a saved-contact name", async () => {
+    // Seed a contact entry for QUOTED_SENDER_JID.
+    await seedContactChat(QUOTED_SENDER_JID, "Alice Contact");
+    // Store an individual chat where one message quotes that sender.
+    const chat = createEmptyChat(JID, "individual");
+    chat.messages = [
+      textMessage("m1", {
+        quoted: { messageId: "orig", sender: QUOTED_SENDER_JID, snippet: "Hey" },
+      }),
+    ];
+    await saveChat(chat);
+    const loaded = await loadChat(JID);
+    expect(loaded?.messages[0]?.quoted?.sender).toBe("Alice Contact");
+  });
+
+  it("resolves quoted.sender to phone when sender is not a contact", async () => {
+    // No contact row — phone falls back from the JID user part (no push name available).
+    const chat = createEmptyChat(JID, "individual");
+    chat.messages = [
+      textMessage("m1", {
+        quoted: { messageId: "orig", sender: QUOTED_SENDER_JID, snippet: "Hey" },
+      }),
+    ];
+    await saveChat(chat);
+    const loaded = await loadChat(JID);
+    // No push name for quoted refs → phone derived from JID user part.
+    expect(loaded?.messages[0]?.quoted?.sender).toBe("+9876543210");
+  });
+
+  it("resolves quoted.sender to 'You' when the quoted message was sent by the own account", async () => {
+    const chat = createEmptyChat(GROUP_JID_Q, "group");
+    chat.groupSubject = "Test Group Q";
+    chat.messages = [
+      textMessage("m1", {
+        // Someone replied to our own message in a group.
+        quoted: { messageId: "our-msg", sender: OWN_JID, snippet: "I said this" },
+      }),
+    ];
+    await saveChat(chat);
+    const loaded = await loadChat(GROUP_JID_Q);
+    expect(loaded?.messages[0]?.quoted?.sender).toBe("You");
+  });
+
+  it("resolves quoted.sender to 'You' in individual chats too", async () => {
+    const chat = createEmptyChat(JID, "individual");
+    chat.messages = [
+      textMessage("m1", {
+        // Inbound message quoting our own earlier message.
+        quoted: { messageId: "our-msg", sender: OWN_JID, snippet: "I said this" },
+      }),
+    ];
+    await saveChat(chat);
+    const loaded = await loadChat(JID);
+    expect(loaded?.messages[0]?.quoted?.sender).toBe("You");
+  });
+
+  it("leaves legacy quoted.sender unchanged when it contains no '@' (no JID)", async () => {
+    const chat = createEmptyChat(JID, "individual");
+    chat.messages = [
+      textMessage("m1", {
+        // A pre-migration row where sender was already a display string.
+        quoted: { messageId: "orig", sender: "Alice Legacy", snippet: "old msg" },
+      }),
+    ];
+    await saveChat(chat);
+    const loaded = await loadChat(JID);
+    expect(loaded?.messages[0]?.quoted?.sender).toBe("Alice Legacy");
+  });
+
+  it("leaves quoted.sender null when no sender was stored", async () => {
+    const chat = createEmptyChat(JID, "individual");
+    chat.messages = [
+      textMessage("m1", {
+        quoted: { messageId: "orig", sender: null, snippet: "some msg" },
+      }),
+    ];
+    await saveChat(chat);
+    const loaded = await loadChat(JID);
+    expect(loaded?.messages[0]?.quoted?.sender).toBeNull();
+  });
+
+  it("resolves quoted.sender in group chats using the shared sender cache", async () => {
+    await seedContactChat(QUOTED_SENDER_JID, "Bob Contact");
+    const chat = createEmptyChat(GROUP_JID_Q, "group");
+    chat.groupSubject = "Test Group Q";
+    chat.messages = [
+      textMessage("m1", {
+        senderJid: QUOTED_SENDER_JID,
+        senderName: "Bob push",
+        direction: "inbound",
+        quoted: { messageId: "orig", sender: QUOTED_SENDER_JID, snippet: "Hey group" },
+      }),
+      textMessage("m2", {
+        timestamp: 2000,
+        senderJid: QUOTED_SENDER_JID,
+        senderName: "Bob push",
+        direction: "inbound",
+        // A second message replying to the same person — exercises the cache.
+        quoted: { messageId: "orig2", sender: QUOTED_SENDER_JID, snippet: "again" },
+      }),
+    ];
+    await saveChat(chat);
+    const loaded = await loadChat(GROUP_JID_Q);
+    // Both sender names and quoted.sender labels should use the saved-contact name.
+    expect(loaded?.messages[0]?.senderName).toBe("Bob Contact");
+    expect(loaded?.messages[0]?.quoted?.sender).toBe("Bob Contact");
+    expect(loaded?.messages[1]?.quoted?.sender).toBe("Bob Contact");
   });
 });

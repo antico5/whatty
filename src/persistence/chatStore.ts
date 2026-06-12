@@ -10,6 +10,8 @@ import {
 } from "../types/index.js";
 import { advanceDeliveryStatus, mergeChatMeta, tombstone, upsertChat } from "./reconcile.js";
 import { getActiveDb, type AccountDb } from "./db.js";
+import { resolveSenderLabel } from "./contacts.js";
+import { getActiveAccount } from "./paths.js";
 
 /**
  * SQLite-backed chat store. Two API tiers:
@@ -105,14 +107,28 @@ function chatFromRow(row: ChatRow, participants: GroupParticipant[], messages: M
 }
 
 function participantsOf(db: AccountDb, jid: string): GroupParticipant[] {
+  // Canonicalize each participant's jid through the alias table at read time:
+  // rows are stored under whatever address space group metadata delivered
+  // (usually @lid), but consumers reason in phone jids — and a participant
+  // that still reads as @lid signals its lid↔pn pairing is unknown (the
+  // store's cue to refresh group metadata). Dedupe in case the same member
+  // was recorded under both addresses across syncs.
   const rows = db.sql
-    .prepare("SELECT jid, display_name, is_admin FROM participants WHERE chat_jid = ? ORDER BY rowid")
+    .prepare(
+      `SELECT COALESCE(a.chat_jid, p.jid) AS jid, p.display_name, p.is_admin
+       FROM participants p LEFT JOIN aliases a ON a.alias_jid = p.jid
+       WHERE p.chat_jid = ? ORDER BY p.rowid`,
+    )
     .all(jid) as { jid: string; display_name: string | null; is_admin: number | null }[];
-  return rows.map((r) => {
-    const p: GroupParticipant = { jid: r.jid, displayName: r.display_name };
-    if (r.is_admin != null) p.isAdmin = r.is_admin !== 0;
-    return p;
-  });
+  const byJid = new Map<string, GroupParticipant>();
+  for (const r of rows) {
+    const existing = byJid.get(r.jid);
+    const p: GroupParticipant = { jid: r.jid, displayName: r.display_name ?? existing?.displayName ?? null };
+    const isAdmin = r.is_admin != null ? r.is_admin !== 0 : existing?.isAdmin;
+    if (isAdmin != null) p.isAdmin = isAdmin;
+    byJid.set(r.jid, p);
+  }
+  return [...byJid.values()];
 }
 
 function reactionsByMessage(db: AccountDb, jid: string): Map<string, { emoji: string; sender: string }[]> {
@@ -142,12 +158,41 @@ function chatShell(db: AccountDb, jid: string): Chat | null {
   return chatFromRow(row, participantsOf(db, jid), []);
 }
 
-function loadMessages(db: AccountDb, jid: string): Message[] {
+function loadMessages(db: AccountDb, jid: string, isGroup = false): Message[] {
   const rows = db.sql
     .prepare("SELECT * FROM messages WHERE chat_jid = ? ORDER BY timestamp, id")
     .all(jid) as unknown as MessageRow[];
   const reactions = reactionsByMessage(db, jid);
-  return rows.map((r) => messageFromRow(r, reactions.get(r.id)));
+
+  // Per-load cache shared across group-sender and quoted-sender lookups so we
+  // do at most one DB lookup per distinct sender JID regardless of call site.
+  const senderCache = new Map<string, string>();
+  const ownJid = getActiveAccount();
+
+  return rows.map((r) => {
+    const msg = messageFromRow(r, reactions.get(r.id));
+
+    // Resolve group inbound sender → contact name / "pushName (phone)" / phone.
+    if (isGroup && msg.direction === "inbound" && msg.senderJid) {
+      msg.senderName = resolveSenderLabel(msg.senderJid, msg.senderName, db, senderCache, ownJid);
+    }
+
+    // Resolve the quoted message's sender label for all chat types.
+    // QuotedRef.sender holds a raw JID (or a legacy display string for rows
+    // written before this change — see plan §1). Treat the value as a JID if
+    // it contains "@", otherwise leave it untouched as a legacy label.
+    if (msg.quoted?.sender) {
+      const rawSender = msg.quoted.sender;
+      if (rawSender.includes("@")) {
+        msg.quoted = {
+          ...msg.quoted,
+          sender: resolveSenderLabel(rawSender, null, db, senderCache, ownJid),
+        };
+      }
+    }
+
+    return msg;
+  });
 }
 
 function writeChatRow(db: AccountDb, chat: Chat): void {
@@ -201,7 +246,7 @@ function loadChatFrom(db: AccountDb, jid: string): Chat | null {
   const canonical = resolveAlias(db, jid);
   const shell = chatShell(db, canonical);
   if (!shell) return null;
-  shell.messages = loadMessages(db, canonical);
+  shell.messages = loadMessages(db, canonical, shell.type === "group");
   return shell;
 }
 
@@ -283,6 +328,12 @@ export interface ChatOps {
   getMessage(jid: string, messageId: string): Promise<Message | null>;
   /** Indexed cross-chat lookup by message id (replaces the all-chats scan). */
   findMessageById(messageId: string): Promise<FoundMessage | null>;
+  /**
+   * For each jid in `names`, update every matching row in the participants
+   * table with the given display name (only when the row currently has no name).
+   * Used to backfill group participant display names from contacts.upsert.
+   */
+  updateParticipantNames(names: Map<string, string>): Promise<void>;
 }
 
 function getMessageRow(db: AccountDb, chatJid: string, id: string): MessageRow | undefined {
@@ -467,5 +518,16 @@ export const chatOps: ChatOps = {
       | MessageRow
       | undefined;
     return row ? { chatJid: row.chat_jid, message: messageFromRow(row) } : null;
+  },
+
+  async updateParticipantNames(names) {
+    if (names.size === 0) return;
+    const db = await getActiveDb();
+    const stmt = db.sql.prepare(
+      "UPDATE participants SET display_name = ? WHERE jid = ? AND display_name IS NULL",
+    );
+    for (const [jid, displayName] of names) {
+      stmt.run(displayName, jid);
+    }
   },
 };

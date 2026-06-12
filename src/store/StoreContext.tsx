@@ -1,5 +1,6 @@
 import { createContext, useContext, useSyncExternalStore, type ReactNode } from "react";
 import type { AccountInfo } from "../persistence/accounts.js";
+import type { DiskUsage } from "../persistence/diskUsage.js";
 import type { Chat } from "../types/index.js";
 import type { AppPhase, AppStore, ConnectionInfo } from "./appStore.js";
 
@@ -42,4 +43,9 @@ export function useAccounts(): AccountInfo[] {
 
 export function useReadonly(): boolean {
   return useAppStore().isReadonly();
+}
+
+export function useDiskUsage(): DiskUsage | null {
+  const store = useAppStore();
+  return useSyncExternalStore(store.subscribe, store.getDiskUsage);
 }

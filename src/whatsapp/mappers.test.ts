@@ -7,6 +7,7 @@ import { encryptedEditOf } from "./edits.js";
 import {
   editedTargetIdOf,
   editedTextOf,
+  groupParticipantAliases,
   mapChat,
   mapGroupMetadata,
   mapWAMessage,
@@ -114,6 +115,32 @@ describe("mapWAMessage", () => {
     });
     // status 2 == SERVER_ACK -> "sent"
     expect(msg.deliveryStatus).toBe("sent");
+  });
+
+  it("quoted contextInfo — QuotedRef.sender carries the participant JID, not a display name", () => {
+    // Req 5: the mapper must store the raw JID so read-time resolution can
+    // apply resolveSenderLabel (contact lookup, own-JID → "You", etc.).
+    const groupReply = {
+      key: { remoteJid: "123456-789@g.us", fromMe: false, id: "GRP-REPLY", participant: "987654321@s.whatsapp.net" },
+      messageTimestamp: 1700000500,
+      pushName: "Bob",
+      message: {
+        extendedTextMessage: {
+          text: "Agreed!",
+          contextInfo: {
+            stanzaId: "GRPMSG01",
+            participant: "999000111@s.whatsapp.net",
+            quotedMessage: { conversation: "Hey everyone" },
+          },
+        },
+      },
+    } as unknown as import("baileys").WAMessage;
+
+    const msg = mapWAMessage(groupReply);
+    // sender must be the raw normalized JID from contextInfo.participant
+    expect(msg.quoted?.sender).toBe("999000111@s.whatsapp.net");
+    expect(msg.quoted?.snippet).toBe("Hey everyone");
+    expect(msg.quoted?.messageId).toBe("GRPMSG01");
   });
 
   it("maps a group message, taking the sender from key.participant", () => {
@@ -238,5 +265,16 @@ describe("mapGroupMetadata", () => {
       { jid: "987654321@s.whatsapp.net", displayName: "Bob", isAdmin: true },
       { jid: "555555555@s.whatsapp.net", displayName: "Carol", isAdmin: undefined },
     ]);
+  });
+});
+
+describe("groupParticipantAliases", () => {
+  it("pairs lid participants with their phone jids, skipping unpaired or non-lid entries", () => {
+    const aliases = groupParticipantAliases([
+      { id: "111222333@lid", phoneNumber: "5491100000000@s.whatsapp.net" },
+      { id: "444555666@lid" }, // no pairing delivered
+      { id: "987654321@s.whatsapp.net", phoneNumber: "987654321@s.whatsapp.net" }, // pn-addressed group
+    ]);
+    expect([...aliases]).toEqual([["111222333@lid", "5491100000000@s.whatsapp.net"]]);
   });
 });

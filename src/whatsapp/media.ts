@@ -10,7 +10,7 @@ import type { MediaRef } from "../types/index.js";
 import { saveMedia } from "../persistence/mediaStore.js";
 import type { Connection } from "./connection.js";
 import { getLogger } from "./logger.js";
-import { MEDIA_CONTENT_KEYS } from "./mappers.js";
+import { MEDIA_CONTENT_KEYS, timestampToMillis } from "./mappers.js";
 
 const MAX_ATTEMPTS = 3;
 const RETRY_DELAY_MS = 500;
@@ -54,6 +54,7 @@ export async function downloadAndStore(conn: Connection, waMsg: WAMessage, jid: 
       return await saveMedia(jid, {
         data: buffer,
         messageId,
+        timestamp: timestampToMillis(waMsg.messageTimestamp) || Date.now(),
         mimeType: inner.mimetype ?? undefined,
         fileName: inner.fileName ?? undefined,
       });

@@ -360,6 +360,23 @@ export function mapGroupParticipants(participants: GroupMetadata["participants"]
   }));
 }
 
+/**
+ * lid → phone-jid pairs carried by group metadata. In lid-addressed groups
+ * each participant's `id` is its `@lid` address and `phoneNumber` its real
+ * phone jid — the pairing that lets group sender labels resolve to a contact
+ * name or number instead of the raw lid.
+ */
+export function groupParticipantAliases(participants: GroupMetadata["participants"]): Map<string, string> {
+  const aliases = new Map<string, string>();
+  for (const p of participants) {
+    if (!p.phoneNumber) continue;
+    const lid = jidNormalizedUser(p.id);
+    const pn = jidNormalizedUser(p.phoneNumber);
+    if (lid.endsWith("@lid") && pn.endsWith("@s.whatsapp.net")) aliases.set(lid, pn);
+  }
+  return aliases;
+}
+
 /** Map full group metadata (subject + participants) into a partial domain `Chat`. */
 export function mapGroupMetadata(meta: GroupMetadata): Partial<Chat> {
   const jid = jidNormalizedUser(meta.id);

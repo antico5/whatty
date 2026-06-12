@@ -1,5 +1,6 @@
 import type { CliRenderer } from "@opentui/core";
 import { getLogger } from "./logger.js";
+import { migrateDataDir } from "./persistence/migrate.js";
 import { createAppStore } from "./store/appStore.js";
 import { startUI } from "./ui/render.js";
 
@@ -48,6 +49,9 @@ async function main(): Promise<void> {
   process.on("unhandledRejection", (reason) => crash("unhandledRejection", reason));
   process.on("SIGINT", () => void shutdown());
   process.on("SIGTERM", () => void shutdown());
+
+  // Migrate legacy ./data dir to the platform data dir before opening any DB.
+  await migrateDataDir();
 
   const store = createAppStore({ readonly: process.argv.includes("--readonly") });
   await store.init();

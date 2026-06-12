@@ -27,6 +27,9 @@ afterEach(async () => {
 });
 
 const JID = "123456789@s.whatsapp.net";
+const GROUP_JID = "123456789-987654@g.us";
+const SENDER_LID = "111222333@lid";
+const SENDER_PN = "5491100000000@s.whatsapp.net";
 
 function fakeConnection(): Connection & EventEmitter {
   const emitter = new EventEmitter() as Connection & EventEmitter;
@@ -200,6 +203,45 @@ describe("ingest (reconcile + persist integration)", () => {
     const edited = chat?.messages.find((m) => m.id === "original");
     expect(edited?.text).toBe("Seis");
     expect(edited?.edited).toBe(true);
+  });
+
+  it('resolves quoted replies to our own messages as "You" via the own-lid alias', async () => {
+    const conn = fakeConnection();
+    conn.getSocket = () =>
+      ({
+        // Device-suffixed, as Baileys reports them — registration must normalize.
+        user: { id: "test-account:7@s.whatsapp.net", lid: "777888999:7@lid" },
+      }) as unknown as ReturnType<Connection["getSocket"]>;
+    createIngestor(conn, { downloadAndStore: async () => null });
+
+    conn.emit("status", "open");
+    await flush();
+
+    // Inbound reply quoting one of our own messages: the quoted participant
+    // arrives as our @lid, with no alt-jid anywhere in the key.
+    conn.emit("messages", {
+      messages: [
+        {
+          key: { remoteJid: JID, fromMe: false, id: "reply-1" },
+          messageTimestamp: 2000,
+          message: {
+            extendedTextMessage: {
+              text: "Dos",
+              contextInfo: {
+                stanzaId: "own-msg",
+                participant: "777888999@lid",
+                quotedMessage: { conversation: "Uno" },
+              },
+            },
+          },
+        } as unknown as WAMessage,
+      ],
+      type: "notify",
+    });
+    await flush();
+
+    const chat = await loadChat(JID);
+    expect(chat?.messages.find((m) => m.id === "reply-1")?.quoted?.sender).toBe("You");
   });
 
   it("applies an editedMessage wrapper received through messages.upsert", async () => {
@@ -406,6 +448,132 @@ describe("ingest (reconcile + persist integration)", () => {
     expect(chat?.phoneNumber).toBe("+5491100000003");
   });
 
+  it("resolves group sender labels from participantAlt on live message keys", async () => {
+    const conn = fakeConnection();
+    createIngestor(conn, { downloadAndStore: async () => null });
+
+    conn.emit("messages", {
+      messages: [
+        {
+          key: { remoteJid: GROUP_JID, fromMe: false, id: "g1", participant: SENDER_LID, participantAlt: SENDER_PN },
+          messageTimestamp: 1000,
+          pushName: "Bob",
+          message: { conversation: "hola" },
+        } as unknown as WAMessage,
+      ],
+      type: "notify",
+    });
+    await flush();
+
+    const chat = await loadChat(GROUP_JID);
+    expect(chat?.messages[0]?.senderName).toBe("Bob (+5491100000000)");
+  });
+
+  it("resolves history-synced group senders once group metadata supplies the lid pairing", async () => {
+    const conn = fakeConnection();
+    createIngestor(conn, { downloadAndStore: async () => null });
+
+    // History-synced group message: lid sender, no participantAlt, no push name.
+    conn.emit("messages", {
+      messages: [
+        {
+          key: { remoteJid: GROUP_JID, fromMe: false, id: "g1", participant: SENDER_LID },
+          messageTimestamp: 1000,
+          message: { conversation: "hola" },
+        } as unknown as WAMessage,
+      ],
+      type: "append",
+    });
+    await flush();
+
+    let chat = await loadChat(GROUP_JID);
+    expect(chat?.messages[0]?.senderName).toBe(SENDER_LID); // nothing to resolve with yet
+
+    // Group metadata refresh (groups.upsert / on chat open) carries the pairing.
+    conn.emit("groups", [
+      { id: GROUP_JID, subject: "Club", participants: [{ id: SENDER_LID, phoneNumber: SENDER_PN }] },
+    ]);
+    await flush();
+
+    chat = await loadChat(GROUP_JID);
+    expect(chat?.messages[0]?.senderName).toBe("+5491100000000");
+    // Participants canonicalize to the phone jid on load — the signal the
+    // store uses to decide a group no longer needs a metadata refresh.
+    expect(chat?.participants.map((p) => p.jid)).toEqual([SENDER_PN]);
+  });
+
+  it("labels a non-contact group sender with their push name once a live message carries it", async () => {
+    const conn = fakeConnection();
+    createIngestor(conn, { downloadAndStore: async () => null });
+
+    // History-synced message: lid sender, no push name (history carries none).
+    conn.emit("messages", {
+      messages: [
+        {
+          key: { remoteJid: GROUP_JID, fromMe: false, id: "g1", participant: SENDER_LID },
+          messageTimestamp: 1000,
+          message: { conversation: "hola" },
+        } as unknown as WAMessage,
+      ],
+      type: "append",
+    });
+    // Group metadata pairs the lid and creates the participant row.
+    conn.emit("groups", [
+      { id: GROUP_JID, subject: "Club", participants: [{ id: SENDER_LID, phoneNumber: SENDER_PN }] },
+    ]);
+    await flush();
+
+    // A live message finally carries the sender's push name…
+    conn.emit("messages", {
+      messages: [
+        {
+          key: { remoteJid: GROUP_JID, fromMe: false, id: "g2", participant: SENDER_LID, participantAlt: SENDER_PN },
+          messageTimestamp: 2000,
+          pushName: "Fechu",
+          message: { conversation: "que tal" },
+        } as unknown as WAMessage,
+      ],
+      type: "notify",
+    });
+    await flush();
+
+    // …and both the new and the old message resolve to "pushName (+phone)".
+    const chat = await loadChat(GROUP_JID);
+    expect(chat?.messages.map((m) => m.senderName)).toEqual([
+      "Fechu (+5491100000000)",
+      "Fechu (+5491100000000)",
+    ]);
+  });
+
+  it("names group participants from history-sync push names delivered before group metadata", async () => {
+    const conn = fakeConnection();
+    createIngestor(conn, { downloadAndStore: async () => null });
+
+    // History sync: the push-name chunk arrives as bare contacts, alongside a
+    // nameless group message — before any participant rows exist.
+    conn.emit("history", {
+      chats: [],
+      contacts: [{ id: SENDER_LID, notify: "Fechu" }],
+      messages: [
+        {
+          key: { remoteJid: GROUP_JID, fromMe: false, id: "g1", participant: SENDER_LID },
+          messageTimestamp: 1000,
+          message: { conversation: "hola" },
+        } as unknown as WAMessage,
+      ],
+    });
+    await flush();
+
+    // Group metadata arrives later (groups.upsert / on chat open).
+    conn.emit("groups", [
+      { id: GROUP_JID, subject: "Club", participants: [{ id: SENDER_LID, phoneNumber: SENDER_PN }] },
+    ]);
+    await flush();
+
+    const chat = await loadChat(GROUP_JID);
+    expect(chat?.messages[0]?.senderName).toBe("Fechu (+5491100000000)");
+  });
+
   it("flush() resolves only once every queued write has been persisted (graceful shutdown)", async () => {
     const conn = fakeConnection();
     const ingestor = createIngestor(conn, { downloadAndStore: async () => null });
@@ -480,11 +648,14 @@ describe("ingest (reconcile + persist integration)", () => {
     const ingestor = createIngestor(conn, { downloadAndStore });
     void ingestor;
 
+    // Use a recent timestamp (within the 7-day auto-download window).
+    const recentTimestamp = Math.floor(Date.now() / 1000) - 60; // 1 minute ago
+
     conn.emit("messages", {
       messages: [
         {
           key: { remoteJid: JID, fromMe: false, id: "img1" },
-          messageTimestamp: 1000,
+          messageTimestamp: recentTimestamp,
           pushName: "Alice",
           message: { imageMessage: { mimetype: "image/jpeg", caption: "look" } },
         } as unknown as WAMessage,
@@ -497,5 +668,134 @@ describe("ingest (reconcile + persist integration)", () => {
     expect(downloadAndStore).toHaveBeenCalledTimes(1);
     const chat = await loadChat(JID);
     expect(chat?.messages[0]?.media).toEqual({ relativePath: "media/img1.jpg", mimeType: "image/jpeg", fileName: null });
+  });
+
+  describe("media auto-download 7-day gate", () => {
+    it("downloads media for a message sent 6 days ago (within window)", async () => {
+      const conn = fakeConnection();
+      const downloadAndStore = vi.fn().mockResolvedValue({ relativePath: "media/img.jpg", mimeType: "image/jpeg", fileName: null });
+      createIngestor(conn, { downloadAndStore });
+
+      const sixDaysAgoSeconds = Math.floor((Date.now() - 6 * 24 * 60 * 60 * 1000) / 1000);
+
+      conn.emit("history", {
+        chats: [{ id: JID }],
+        contacts: [],
+        messages: [
+          {
+            key: { remoteJid: JID, fromMe: false, id: "img-recent" },
+            messageTimestamp: sixDaysAgoSeconds,
+            message: { imageMessage: { mimetype: "image/jpeg" } },
+          } as unknown as WAMessage,
+        ],
+      });
+      await flush();
+      await flush();
+
+      expect(downloadAndStore).toHaveBeenCalledTimes(1);
+    });
+
+    it("skips media download for a message sent 8 days ago (outside window)", async () => {
+      const conn = fakeConnection();
+      const downloadAndStore = vi.fn().mockResolvedValue({ relativePath: "media/img.jpg", mimeType: "image/jpeg", fileName: null });
+      createIngestor(conn, { downloadAndStore });
+
+      const eightDaysAgoSeconds = Math.floor((Date.now() - 8 * 24 * 60 * 60 * 1000) / 1000);
+
+      conn.emit("history", {
+        chats: [{ id: JID }],
+        contacts: [],
+        messages: [
+          {
+            key: { remoteJid: JID, fromMe: false, id: "img-old" },
+            messageTimestamp: eightDaysAgoSeconds,
+            message: { imageMessage: { mimetype: "image/jpeg" } },
+          } as unknown as WAMessage,
+        ],
+      });
+      await flush();
+      await flush();
+
+      expect(downloadAndStore).not.toHaveBeenCalled();
+    });
+
+    it("skips download for old message but still persists the message record", async () => {
+      const conn = fakeConnection();
+      const downloadAndStore = vi.fn().mockResolvedValue({ relativePath: "media/img.jpg", mimeType: "image/jpeg", fileName: null });
+      createIngestor(conn, { downloadAndStore });
+
+      const eightDaysAgoSeconds = Math.floor((Date.now() - 8 * 24 * 60 * 60 * 1000) / 1000);
+
+      conn.emit("history", {
+        chats: [{ id: JID }],
+        contacts: [],
+        messages: [
+          {
+            key: { remoteJid: JID, fromMe: false, id: "img-old" },
+            messageTimestamp: eightDaysAgoSeconds,
+            message: { imageMessage: { mimetype: "image/jpeg", caption: "old photo" } },
+          } as unknown as WAMessage,
+        ],
+      });
+      await flush();
+      await flush();
+
+      expect(downloadAndStore).not.toHaveBeenCalled();
+      const chat = await loadChat(JID);
+      expect(chat?.messages).toHaveLength(1);
+      expect(chat?.messages[0]?.id).toBe("img-old");
+      // media stays null — not downloaded
+      expect(chat?.messages[0]?.media).toBeNull();
+    });
+
+    it("treats a message at exactly the 7-day boundary as within window (boundary at the edge)", async () => {
+      const conn = fakeConnection();
+      const downloadAndStore = vi.fn().mockResolvedValue({ relativePath: "media/img.jpg", mimeType: "image/jpeg", fileName: null });
+      createIngestor(conn, { downloadAndStore });
+
+      // Exactly at the boundary: ageMs === MEDIA_AUTODOWNLOAD_MAX_AGE_MS means > check is false
+      // Use 7 days - 30 seconds to be safely within the window
+      const justInsideSeconds = Math.floor((Date.now() - 7 * 24 * 60 * 60 * 1000 + 30_000) / 1000);
+
+      conn.emit("history", {
+        chats: [{ id: JID }],
+        contacts: [],
+        messages: [
+          {
+            key: { remoteJid: JID, fromMe: false, id: "img-boundary" },
+            messageTimestamp: justInsideSeconds,
+            message: { imageMessage: { mimetype: "image/jpeg" } },
+          } as unknown as WAMessage,
+        ],
+      });
+      await flush();
+      await flush();
+
+      expect(downloadAndStore).toHaveBeenCalledTimes(1);
+    });
+
+    it("gate applies equally to messages.upsert (live) and messaging-history.set paths", async () => {
+      const conn = fakeConnection();
+      const downloadAndStore = vi.fn().mockResolvedValue({ relativePath: "media/img.jpg", mimeType: "image/jpeg", fileName: null });
+      createIngestor(conn, { downloadAndStore });
+
+      const oldSeconds = Math.floor((Date.now() - 8 * 24 * 60 * 60 * 1000) / 1000);
+
+      // Old message via live messages.upsert — should also be skipped
+      conn.emit("messages", {
+        messages: [
+          {
+            key: { remoteJid: JID, fromMe: false, id: "img-old-live" },
+            messageTimestamp: oldSeconds,
+            message: { imageMessage: { mimetype: "image/jpeg" } },
+          } as unknown as WAMessage,
+        ],
+        type: "notify",
+      });
+      await flush();
+      await flush();
+
+      expect(downloadAndStore).not.toHaveBeenCalled();
+    });
   });
 });

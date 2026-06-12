@@ -1,7 +1,8 @@
 import { useKeyboard } from "@opentui/react";
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import type { AppStore } from "../store/appStore.js";
-import { StoreProvider, useConnection, usePhase } from "../store/StoreContext.js";
+import { StoreProvider, useAppStore, useConnection, usePhase } from "../store/StoreContext.js";
+import { StatusBar } from "./components/StatusBar.js";
 import { LAYOUT_MAX_WIDTH } from "./layout.js";
 import { AccountSelectScreen } from "./screens/AccountSelectScreen.js";
 import { ChatListScreen } from "./screens/ChatListScreen.js";
@@ -42,12 +43,16 @@ function Router(): ReactNode {
     }
   }, [phase, connectionState]);
 
+  const store = useAppStore();
   const navigation = useMemo<NavigationApi>(
     () => ({
-      openChat: (jid: string) => setActiveJid(jid),
+      openChat: (jid: string) => {
+        setActiveJid(jid);
+        store.refreshGroupIfNeeded(jid);
+      },
       back: () => setActiveJid(null),
     }),
-    [],
+    [store],
   );
 
   let body: ReactNode;
@@ -62,6 +67,7 @@ function Router(): ReactNode {
       <box style={{ flexGrow: 1, flexDirection: "row", justifyContent: "center" }}>
         <box style={{ flexGrow: 1, maxWidth: LAYOUT_MAX_WIDTH, flexDirection: "column" }}>
           {activeJid !== null ? <ChatViewScreen jid={activeJid} /> : <ChatListScreen />}
+          <StatusBar />
         </box>
       </box>
     );

@@ -21,6 +21,7 @@ import { downloadAndStore as defaultDownloadAndStore } from "./media.js";
 import {
   editedTargetIdOf,
   editedTextOf,
+  groupParticipantAliases,
   mapChat,
   mapContact,
   mapDeliveryStatus,
@@ -43,14 +44,30 @@ export interface Ingestor extends EventEmitter {
   stop(): void;
   /** Resolves once every queued chat write has settled — for clean shutdown ("flush pending saves"). */
   flush(): Promise<void>;
+  /** Fetch and store fresh group metadata (participants, subject) for `jid`. No-op when offline. */
+  refreshGroup(jid: string): void;
 }
 
 const STATUS_BROADCAST_JID = "status@broadcast";
 
+/**
+ * Only auto-download media for messages within this window. History syncs on a
+ * fresh device link can span years; downloading all of that eagerly wastes disk
+ * and bandwidth. Messages older than 7 days are skipped — their `media` field
+ * stays `null`. WhatsApp media URLs expire within a similar window, so older
+ * media would likely be unrecoverable anyway.
+ */
+const MEDIA_AUTODOWNLOAD_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
 interface GroupedMessages {
   byJid: Map<string, WAMessage[]>;
-  /** lid → phone-jid pairs discovered from live message keys (`remoteJidAlt`). */
+  /** lid → phone-jid pairs discovered from live message keys (`remoteJidAlt` / `participantAlt`). */
   aliases: Map<string, string>;
+}
+
+/** Record a lid → phone-jid pair, accepting only a well-formed pairing. */
+function collectAlias(aliases: Map<string, string>, lid: string, pn: string): void {
+  if (lid.endsWith("@lid") && pn.endsWith("@s.whatsapp.net")) aliases.set(lid, pn);
 }
 
 /**
@@ -74,6 +91,13 @@ function groupMessagesByJid(messages: WAMessage[]): GroupedMessages {
         aliases.set(jid, alt);
         jid = alt;
       }
+    }
+    // Group senders are lid-addressed the same way the chat itself can be:
+    // `participantAlt` carries the sender's phone jid alongside the lid in
+    // `participant`. Harvest the pair so group sender labels resolve to a
+    // contact name / phone number instead of the raw lid.
+    if (m.key.participant && m.key.participantAlt) {
+      collectAlias(aliases, jidNormalizedUser(m.key.participant), jidNormalizedUser(m.key.participantAlt));
     }
     const list = byJid.get(jid);
     if (list) list.push(m);
@@ -287,16 +311,36 @@ export function createIngestor(conn: Connection, deps: Partial<IngestorDeps> = {
    * every pending envelope on the fresh socket.
    */
   function handleStatus(status: ConnectionStatus): void {
-    if (status !== "open" || pendingEncryptedEdits.size === 0) return;
+    if (status !== "open") return;
+    registerOwnAlias();
+    if (pendingEncryptedEdits.size === 0) return;
     requestedEditHistory.clear();
     for (const [key, envelope] of [...pendingEncryptedEdits]) {
       applyEncryptedEdit(key.slice(0, key.indexOf("\0")), envelope);
     }
   }
 
+  /**
+   * Our own lid↔pn pair never arrives through message keys — our lid shows up
+   * only inside *other people's* quoted refs (`contextInfo.participant`),
+   * which carry no alt-jid — so quoted replies to our own messages would
+   * render the raw `@lid`. The socket knows both of our identities once the
+   * connection opens; register them like any other alias.
+   */
+  function registerOwnAlias(): void {
+    const user = conn.getSocket()?.user;
+    if (!user?.id || !user.lid) return;
+    registerAliases(new Map([[jidNormalizedUser(user.lid), jidNormalizedUser(user.id)]]));
+  }
+
   function scheduleMediaDownload(jid: string, waMsg: WAMessage): void {
     const messageId = waMsg.key.id;
     if (!messageId) return;
+    const ageMs = Date.now() - timestampToMillis(waMsg.messageTimestamp);
+    if (ageMs > MEDIA_AUTODOWNLOAD_MAX_AGE_MS) {
+      log.debug({ jid, messageId, ageMs }, "skipping media download: message older than 7 days");
+      return;
+    }
     queues.enqueue(jid, async () => {
       try {
         const media = await downloadAndStore(conn, waMsg, jid);
@@ -344,9 +388,71 @@ export function createIngestor(conn: Connection, deps: Partial<IngestorDeps> = {
     return candidate ? jidNormalizedUser(candidate) : null;
   }
 
+  /**
+   * Push names keyed by every identifier a contact carries. Includes `notify`
+   * (the peer's self-chosen push name) on purpose: the participants table is
+   * the push-name fallback for group sender labels — a saved-contact name
+   * still wins at label-resolution time (rule 1 in `resolveSenderLabel`).
+   */
+  function participantNamesOf(contactList: Contact[]): Map<string, string> {
+    const names = new Map<string, string>();
+    for (const c of contactList) {
+      const name = c.name ?? c.notify ?? null;
+      if (!name) continue;
+      for (const key of [c.id, c.lid]) {
+        if (key) names.set(jidNormalizedUser(key), name);
+      }
+    }
+    return names;
+  }
+
+  function backfillParticipantNames(names: Map<string, string>): void {
+    if (names.size === 0) return;
+    ops.updateParticipantNames(names).catch((err: unknown) =>
+      log.warn({ err }, "failed to update participant names"),
+    );
+  }
+
+  /**
+   * Group message push names are the only name source for non-contact members
+   * (history-synced messages carry none, and contacts events only cover the
+   * address book). Feed them into the in-memory contact index — so group
+   * metadata mapped later picks them up — and into any participant rows that
+   * already exist, which retroactively names that sender's old messages.
+   */
+  function harvestGroupSenderNames(waMessages: WAMessage[]): void {
+    const names = new Map<string, string>();
+    for (const waMsg of waMessages) {
+      const sender = waMsg.key.participant;
+      if (waMsg.key.fromMe || !sender || !waMsg.pushName) continue;
+      const senderJid = jidNormalizedUser(sender);
+      const altJid = waMsg.key.participantAlt ? jidNormalizedUser(waMsg.key.participantAlt) : undefined;
+      indexContact({ id: senderJid, phoneNumber: altJid, notify: waMsg.pushName });
+      names.set(senderJid, waMsg.pushName);
+      if (altJid) names.set(altJid, waMsg.pushName);
+    }
+    backfillParticipantNames(names);
+  }
+
+  /**
+   * Map group participants, filling nameless ones from the contact index
+   * (saved name or push name) under either of their addresses — metadata keys
+   * participants by lid while address-book contacts may be known by phone jid.
+   */
+  function mapParticipantsWithNames(raw: GroupMetadata["participants"]): Chat["participants"] {
+    return mapGroupParticipants(raw).map((p, i) => {
+      if (p.displayName) return p;
+      const alt = raw[i]?.phoneNumber;
+      const c = contacts.get(p.jid) ?? (alt ? contacts.get(jidNormalizedUser(alt)) : undefined);
+      const name = c?.name ?? c?.notify ?? null;
+      return name ? { ...p, displayName: name } : p;
+    });
+  }
+
   function ingestMessages(jid: string, waMessages: WAMessage[], baseMeta: Partial<Chat>): void {
     const regular = waMessages.filter(isRegularMessage);
     const incoming = regular.map(mapWAMessage);
+    if (chatTypeOf(jid) === "group") harvestGroupSenderNames(regular);
 
     const meta = { ...baseMeta };
     // A `@lid`-keyed chat carries no number of its own; inbound message keys
@@ -404,6 +510,9 @@ export function createIngestor(conn: Connection, deps: Partial<IngestorDeps> = {
       "history.set received",
     );
     for (const c of payload.contacts) indexContact(c);
+    // History sync delivers push names as bare contacts (`{ id, notify }`) —
+    // often the only name we'll ever see for non-contact group members.
+    backfillParticipantNames(participantNamesOf(payload.contacts));
 
     const { byJid: messagesByJid, aliases } = groupMessagesByJid(payload.messages);
     registerAliases(aliases);
@@ -490,13 +599,15 @@ export function createIngestor(conn: Connection, deps: Partial<IngestorDeps> = {
       // might be keyed under so a chat never stays stuck at "Not Contact" — but
       // only onto chats that already exist (don't conjure chats from contacts).
       const meta = mapContact(c);
-      if (meta.displayName == null && meta.phoneNumber == null) continue;
-      for (const key of [c.id, c.lid, c.phoneNumber]) {
-        if (!key) continue;
-        const jid = jidNormalizedUser(key);
-        mutate(jid, (cjid) => ops.mergeChatMeta(cjid, meta, false));
+      if (meta.displayName != null || meta.phoneNumber != null) {
+        for (const key of [c.id, c.lid, c.phoneNumber]) {
+          if (!key) continue;
+          const jid = jidNormalizedUser(key);
+          mutate(jid, (cjid) => ops.mergeChatMeta(cjid, meta, false));
+        }
       }
     }
+    backfillParticipantNames(participantNamesOf(payload));
   }
 
   function handleChats(payload: BaileysChat[] | Partial<BaileysChat>[]): void {
@@ -513,7 +624,11 @@ export function createIngestor(conn: Connection, deps: Partial<IngestorDeps> = {
     const sock = conn.getSocket();
     if (!sock) return;
     sock.groupMetadata(jid).then(
-      (meta: GroupMetadata) => mutate(jid, (cjid) => ops.mergeChatMeta(cjid, mapGroupMetadata(meta), true)),
+      (meta: GroupMetadata) => {
+        registerAliases(groupParticipantAliases(meta.participants));
+        const partial = { ...mapGroupMetadata(meta), participants: mapParticipantsWithNames(meta.participants) };
+        mutate(jid, (cjid) => ops.mergeChatMeta(cjid, partial, true));
+      },
       (err: unknown) => log.warn({ err, jid }, "failed to refresh group metadata"),
     );
   }
@@ -528,7 +643,10 @@ export function createIngestor(conn: Connection, deps: Partial<IngestorDeps> = {
           partial.displayName = meta.subject;
           partial.groupSubject = meta.subject;
         }
-        if (meta.participants) partial.participants = mapGroupParticipants(meta.participants);
+        if (meta.participants) {
+          registerAliases(groupParticipantAliases(meta.participants));
+          partial.participants = mapParticipantsWithNames(meta.participants);
+        }
         mutate(jid, (cjid) => ops.mergeChatMeta(cjid, partial, true));
       }
       return;
@@ -561,6 +679,7 @@ export function createIngestor(conn: Connection, deps: Partial<IngestorDeps> = {
   };
 
   emitter.flush = () => queues.drain();
+  emitter.refreshGroup = (jid: string) => refreshGroupMetadata(jid);
 
   return emitter;
 }

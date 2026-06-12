@@ -295,4 +295,80 @@ describe("appStore", () => {
     // link connection + session connection
     expect(world.connections).toHaveLength(2);
   });
+
+  describe("leaveSession", () => {
+    it("stops the connection, clears active account, and transitions phase to select", async () => {
+      await seedChat(ACCOUNT_ID, JID_A, "Alice", 1000);
+
+      const world = fakeWorld([{ id: ACCOUNT_ID, name: "Main" }]);
+      let stopCalled = false;
+      const origCreateConnection = world.deps.createConnection!;
+      world.deps.createConnection = (opts) => {
+        const conn = origCreateConnection(opts);
+        const origStop = conn.stop.bind(conn);
+        conn.stop = async () => {
+          stopCalled = true;
+          return origStop();
+        };
+        return conn;
+      };
+
+      const store = createAppStore(world.deps);
+      await store.init();
+      await store.selectAccount(ACCOUNT_ID);
+
+      expect(store.getPhase()).toBe("session");
+      expect(store.getChats()).toHaveLength(1);
+
+      await store.leaveSession();
+
+      expect(stopCalled).toBe(true);
+      expect(store.getPhase()).toBe("select");
+      expect(store.getChats()).toEqual([]);
+    });
+
+    it("does not delete chat data when leaving a session", async () => {
+      await seedChat(ACCOUNT_ID, JID_A, "Alice", 1000);
+
+      const world = fakeWorld([{ id: ACCOUNT_ID, name: "Main" }]);
+      const store = createAppStore(world.deps);
+      await store.init();
+      await store.selectAccount(ACCOUNT_ID);
+
+      await store.leaveSession();
+
+      // Chat DB file must still exist on disk after leaving.
+      const dbStat = await fs.stat(accountDbFile(ACCOUNT_ID));
+      expect(dbStat.isFile()).toBe(true);
+      // Creds were never removed.
+      expect(world.removedCreds).toEqual([]);
+    });
+
+    it("throws if called outside of an active session", async () => {
+      const world = fakeWorld([{ id: ACCOUNT_ID, name: "Main" }]);
+      const store = createAppStore(world.deps);
+      await store.init();
+
+      // Phase is "select" here — leaveSession must reject.
+      await expect(store.leaveSession()).rejects.toThrow(/cannot leave a session/);
+    });
+
+    it("refreshes the accounts list after leaving so the selector shows current accounts", async () => {
+      const otherAccount = "888888888@s.whatsapp.net";
+
+      const world = fakeWorld([
+        { id: ACCOUNT_ID, name: "Main" },
+        { id: otherAccount, name: "Work" },
+      ]);
+      const store = createAppStore(world.deps);
+      await store.init();
+      await store.selectAccount(ACCOUNT_ID);
+
+      await store.leaveSession();
+
+      expect(store.getPhase()).toBe("select");
+      expect(store.getAccounts().map((a) => a.id)).toContain(ACCOUNT_ID);
+      expect(store.getAccounts().map((a) => a.id)).toContain(otherAccount);
+    });
+  });
 });

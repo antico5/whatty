@@ -8,6 +8,7 @@ import {
 } from "../persistence/accounts.js";
 import { loadAllChats as defaultLoadAllChats, loadChat as defaultLoadChat } from "../persistence/chatStore.js";
 import { closeActiveDb, getActiveDb, pruneEvents } from "../persistence/db.js";
+import { getDiskUsage as defaultGetDiskUsage, type DiskUsage } from "../persistence/diskUsage.js";
 import { setActiveAccount } from "../persistence/paths.js";
 import type { Chat, Message } from "../types/index.js";
 import { createSerialQueues } from "../util/serialQueues.js";
@@ -44,6 +45,9 @@ export interface AppStoreDeps {
   createPendingAuthDir: () => Promise<string>;
   finalizePendingAccount: (pendingAuthDir: string) => Promise<AccountInfo>;
   removeAccountCreds: (accountId: string) => Promise<void>;
+  getDiskUsage: (accountId: string) => Promise<DiskUsage>;
+  /** Poll interval for disk usage in ms. Default 30 000. */
+  diskUsagePollInterval?: number;
   readonly?: boolean;
 }
 
@@ -58,11 +62,20 @@ export interface AppStore {
   selectAccount(accountId: string): Promise<void>;
   /** Pair a new device via QR; on success the account is finalized and its session starts. */
   linkNewDevice(): Promise<void>;
+  /**
+   * Leave the active session and return to the account selector.
+   * Flushes pending writes, stops the connection (including any reconnect
+   * timers), and transitions phase → "select". Chat data is never deleted.
+   */
+  leaveSession(): Promise<void>;
   getChats(): Chat[];
   getChat(jid: string): Chat | null;
   getConnection(): ConnectionInfo;
   isReadonly(): boolean;
   sendText(jid: string, text: string): Promise<Message>;
+  getDiskUsage(): DiskUsage | null;
+  /** If `jid` is a group with no participants stored, fetches fresh group metadata in the background. */
+  refreshGroupIfNeeded(jid: string): void;
 }
 
 function sortByLastActivity(chats: Chat[]): Chat[] {
@@ -86,6 +99,8 @@ export function createAppStore(deps: Partial<AppStoreDeps> = {}): AppStore {
   const createPendingAuthDir = deps.createPendingAuthDir ?? defaultCreatePendingAuthDir;
   const finalizePendingAccount = deps.finalizePendingAccount ?? defaultFinalizePendingAccount;
   const removeAccountCreds = deps.removeAccountCreds ?? defaultRemoveAccountCreds;
+  const getDiskUsageFn = deps.getDiskUsage ?? defaultGetDiskUsage;
+  const diskUsagePollInterval = deps.diskUsagePollInterval ?? 30_000;
   const readonly = deps.readonly ?? false;
   const log = getLogger().child({ module: "app-store" });
 
@@ -100,9 +115,34 @@ export function createAppStore(deps: Partial<AppStoreDeps> = {}): AppStore {
   let connection: Connection | null = null;
   let ingestor: Ingestor | null = null;
   let sender: ReturnType<typeof createSender> | null = null;
+  let diskUsage: DiskUsage | null = null;
+  let diskUsageTimer: ReturnType<typeof setInterval> | null = null;
 
   function notify(): void {
     for (const listener of listeners) listener();
+  }
+
+  function stopDiskUsagePoller(): void {
+    if (diskUsageTimer !== null) {
+      clearInterval(diskUsageTimer);
+      diskUsageTimer = null;
+    }
+    diskUsage = null;
+  }
+
+  function startDiskUsagePoller(accountId: string): void {
+    stopDiskUsagePoller();
+    async function poll(): Promise<void> {
+      try {
+        const usage = await getDiskUsageFn(accountId);
+        diskUsage = usage;
+        notify();
+      } catch (err) {
+        log.error({ err, accountId }, "failed to poll disk usage");
+      }
+    }
+    void poll();
+    diskUsageTimer = setInterval(() => void poll(), diskUsagePollInterval);
   }
 
   function upsertChatInList(chat: Chat): void {
@@ -141,6 +181,7 @@ export function createAppStore(deps: Partial<AppStoreDeps> = {}): AppStore {
   }
 
   async function teardownSession(): Promise<void> {
+    stopDiskUsagePoller();
     const conn = connection;
     connection = null;
     ingestor?.stop();
@@ -192,6 +233,8 @@ export function createAppStore(deps: Partial<AppStoreDeps> = {}): AppStore {
 
     chats = sortByLastActivity(await loadAllChats());
     notify();
+
+    startDiskUsagePoller(accountId);
 
     const conn = createConnection({});
     connection = conn;
@@ -251,6 +294,7 @@ export function createAppStore(deps: Partial<AppStoreDeps> = {}): AppStore {
     },
 
     async stop(): Promise<void> {
+      stopDiskUsagePoller();
       ingestor?.stop();
       await ingestor?.flush();
       await connection?.stop();
@@ -279,6 +323,15 @@ export function createAppStore(deps: Partial<AppStoreDeps> = {}): AppStore {
       await startLink();
     },
 
+    async leaveSession(): Promise<void> {
+      if (phase !== "session") throw new Error(`cannot leave a session during phase "${phase}"`);
+      await teardownSession();
+      accounts = await listLinkedAccounts();
+      phase = "select";
+      connectionInfo = { connectionState: "connecting", qr: null };
+      notify();
+    },
+
     getChats(): Chat[] {
       return chats;
     },
@@ -299,6 +352,20 @@ export function createAppStore(deps: Partial<AppStoreDeps> = {}): AppStore {
       if (readonly) throw new Error("send blocked — app is in read-only mode");
       if (!sender) throw new Error("no active session — select an account first");
       return sender.sendText(jid, text);
+    },
+
+    getDiskUsage(): DiskUsage | null {
+      return diskUsage;
+    },
+    refreshGroupIfNeeded(jid: string): void {
+      const chat = chats.find((c) => c.jid === jid);
+      if (!chat || chat.type !== "group" || !ingestor) return;
+      // No participants yet, or some still read as @lid after alias
+      // canonicalization — their lid↔pn pairing is unknown, and fresh group
+      // metadata is what delivers it (sender labels depend on the pairing).
+      const needsRefresh =
+        chat.participants.length === 0 || chat.participants.some((p) => p.jid.endsWith("@lid"));
+      if (needsRefresh) ingestor.refreshGroup(jid);
     },
   };
 }
