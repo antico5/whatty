@@ -13,6 +13,7 @@ import { EventEmitter } from "node:events";
 import { accountIdFromMeId } from "../persistence/accounts.js";
 import { chatOps, loadChat, type FoundMessage } from "../persistence/chatStore.js";
 import { getActiveDb, recordEvent } from "../persistence/db.js";
+import type { JobType } from "../queue/types.js";
 import { makeDbAuthState } from "./authState.js";
 import { getLogger } from "./logger.js";
 import { rawWAMessage } from "./mappers.js";
@@ -159,6 +160,13 @@ export interface ConnectionOptions {
    * permanent account DB and starts a fresh connection from there.
    */
   linkMode?: boolean;
+  /**
+   * Durable hand-off for every data event: the listener does no logic, it just
+   * journals the payload as a job file. Absent only in `linkMode`, where no
+   * account (and hence no queue) exists yet — pairing closes the stream before
+   * data events flow.
+   */
+  enqueueJob?: (type: JobType, payload: unknown) => Promise<void>;
 }
 
 export interface Connection extends EventEmitter {
@@ -169,12 +177,18 @@ export interface Connection extends EventEmitter {
 }
 
 export function createConnection(options: ConnectionOptions): Connection {
-  const { authDir, linkMode = false } = options;
+  const { authDir, linkMode = false, enqueueJob } = options;
   if (linkMode && authDir === undefined) {
     throw new Error("linkMode requires an authDir for the pending pairing creds");
   }
   const emitter = new EventEmitter() as Connection;
   const log = getLogger().child({ module: "connection" });
+
+  /** Journal a data event as a durable job — the only thing a listener does. */
+  function enqueue(type: JobType, payload: unknown): void {
+    if (!enqueueJob) return;
+    void enqueueJob(type, payload).catch((err) => log.error({ err, type }, "failed to enqueue job for event"));
+  }
 
   let sock: WASocket | null = null;
   let started = false;
@@ -250,13 +264,13 @@ export function createConnection(options: ConnectionOptions): Connection {
       printQRInTerminal: false,
       // lurk-friendly per spec: never broadcast presence or read state
       markOnlineOnConnect: false,
-      // Without this, Baileys defaults `shouldSyncHistoryMessage` to
-      // `() => !!syncFullHistory` (false), so it never processes the
-      // INITIAL_BOOTSTRAP/RECENT history notifications and never emits
-      // `messaging-history.set` — chats show up (via chats.upsert) but every
-      // conversation is empty. Enabling it makes WhatsApp deliver message
-      // history on link.
+      // Makes the phone upload deep history at link time. Without it Baileys
+      // short-circuits and never processes the full message list.
       syncFullHistory: true,
+      // rc13's default skips `syncType=FULL` chunks (`syncType !== FULL`), so
+      // deep history was received, acked, and silently discarded. Process
+      // every chunk — the job queue journals each one durably before ingest.
+      shouldSyncHistoryMessage: () => true,
       getMessage,
     });
     sock = socket;
@@ -272,6 +286,12 @@ export function createConnection(options: ConnectionOptions): Connection {
 
       if (update.connection === "open") {
         reconnectAttempt = 0;
+        // Our own lid↔pn pair never arrives through message keys — capture it
+        // from the live socket now and land it like any other pairing. This is
+        // the one sanctioned "logic" in a listener: reading data that only
+        // exists at event time.
+        const user = socket.user;
+        if (user?.id) enqueue("own-identity", { id: user.id, lid: user.lid ?? null, name: user.name ?? null });
       } else if (update.connection === "close") {
         const statusCode = statusCodeOf(update);
         log.info(
@@ -299,60 +319,65 @@ export function createConnection(options: ConnectionOptions): Connection {
     const firstJid = (messages: WAMessage[]): string | null =>
       messages[0]?.key.remoteJid ?? null;
 
+    // Data events: remember (the getMessage cache feeds retry receipts),
+    // record (debug aid), journal as a job. No other logic — WhatsApp has
+    // already acked these by the time we see them, so the only safe move is
+    // getting them onto disk.
     socket.ev.on("messaging-history.set", (payload) => {
       for (const message of payload.messages) rememberMessage(message);
-      // The full payload can be tens of MB — record the shape, not the body.
+      // The full payload can be tens of MB — record the shape, not the body
+      // (the job file holds the body).
       recordEvent("messaging-history.set", null, {
         chats: payload.chats.length,
         contacts: payload.contacts.length,
         messages: payload.messages.length,
         jids: [...new Set(payload.messages.map((m) => m.key.remoteJid))].slice(0, 50),
       });
-      emitter.emit("history", payload);
+      enqueue("process-history", payload);
     });
     socket.ev.on("messages.upsert", (payload) => {
       for (const message of payload.messages) rememberMessage(message);
       recordEvent("messages.upsert", firstJid(payload.messages), payload);
-      emitter.emit("messages", payload);
+      enqueue("process-messages", payload);
     });
     socket.ev.on("messages.update", (payload) => {
       recordEvent("messages.update", payload[0]?.key.remoteJid ?? null, payload);
-      emitter.emit("message-update", payload);
+      enqueue("process-message-update", payload);
     });
     socket.ev.on("messages.reaction", (payload) => {
       recordEvent("messages.reaction", payload[0]?.key.remoteJid ?? null, payload);
-      emitter.emit("reaction", payload);
+      enqueue("process-reaction", payload);
     });
     socket.ev.on("message-receipt.update", (payload) => {
       recordEvent("message-receipt.update", payload[0]?.key.remoteJid ?? null, payload);
-      emitter.emit("receipts", payload);
+      enqueue("process-receipts", payload);
     });
     socket.ev.on("contacts.upsert", (payload) => {
       recordEvent("contacts.upsert", payload[0]?.id ?? null, payload);
-      emitter.emit("contacts", payload);
+      enqueue("process-contacts", payload);
     });
     // `contacts.update` carries push names and verified business names (Baileys
     // emits it for every inbound message with a pushName, and for app-state
     // contact changes). Without it, @lid chats never learn their display name.
     socket.ev.on("contacts.update", (payload) => {
       recordEvent("contacts.update", payload[0]?.id ?? null, payload);
-      emitter.emit("contacts", payload);
+      enqueue("process-contacts", payload);
     });
     socket.ev.on("chats.upsert", (payload) => {
       recordEvent("chats.upsert", payload[0]?.id ?? null, payload);
-      emitter.emit("chats", payload);
+      enqueue("process-chats", payload);
     });
     socket.ev.on("chats.update", (payload) => {
       recordEvent("chats.update", payload[0]?.id ?? null, payload);
-      emitter.emit("chats", payload);
+      enqueue("process-chats", payload);
     });
     socket.ev.on("groups.update", (payload) => {
       recordEvent("groups.update", payload[0]?.id ?? null, payload);
-      emitter.emit("groups", payload);
+      enqueue("process-groups", payload);
     });
     socket.ev.on("group-participants.update", (payload) => {
       recordEvent("group-participants.update", payload.id ?? null, payload);
-      emitter.emit("groups", payload);
+      enqueue("process-groups", payload);
     });
   }
 

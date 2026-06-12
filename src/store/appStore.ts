@@ -9,7 +9,13 @@ import {
 import { loadAllChats as defaultLoadAllChats, loadChat as defaultLoadChat } from "../persistence/chatStore.js";
 import { closeActiveDb, getActiveDb, pruneEvents } from "../persistence/db.js";
 import { getDiskUsage as defaultGetDiskUsage, type DiskUsage } from "../persistence/diskUsage.js";
+import { acquireInstanceLock, type InstanceLock } from "../persistence/instanceLock.js";
 import { setActiveAccount } from "../persistence/paths.js";
+import { createFsQueue } from "../queue/fsQueue.js";
+import { jobHandlers } from "../queue/handlers/index.js";
+import { refreshGroupJobName } from "../queue/handlers/shared.js";
+import { createProcessor, type ProcessorApi } from "../queue/processor.js";
+import type { DataChange } from "../queue/types.js";
 import type { Chat, Message } from "../types/index.js";
 import { createSerialQueues } from "../util/serialQueues.js";
 import {
@@ -18,7 +24,6 @@ import {
   type ConnectionOptions,
   type ConnectionStatus,
 } from "../whatsapp/connection.js";
-import { createIngestor, type Ingestor } from "../whatsapp/ingest.js";
 import { getLogger } from "../whatsapp/logger.js";
 import { createSender } from "../whatsapp/send.js";
 
@@ -113,10 +118,11 @@ export function createAppStore(deps: Partial<AppStoreDeps> = {}): AppStore {
   let chats: Chat[] = [];
   let connectionInfo: ConnectionInfo = { connectionState: "connecting", qr: null };
   let connection: Connection | null = null;
-  let ingestor: Ingestor | null = null;
+  let processor: ProcessorApi | null = null;
   let sender: ReturnType<typeof createSender> | null = null;
   let diskUsage: DiskUsage | null = null;
   let diskUsageTimer: ReturnType<typeof setInterval> | null = null;
+  let instanceLock: InstanceLock | null = null;
 
   function notify(): void {
     for (const listener of listeners) listener();
@@ -184,13 +190,17 @@ export function createAppStore(deps: Partial<AppStoreDeps> = {}): AppStore {
     stopDiskUsagePoller();
     const conn = connection;
     connection = null;
-    ingestor?.stop();
-    await ingestor?.flush();
-    ingestor = null;
-    sender = null;
+    // Stop the socket first so no new jobs are enqueued, then the processor —
+    // it only awaits the in-flight job; pending work stays on disk for the
+    // next session.
     await conn?.stop();
+    await processor?.stop();
+    processor = null;
+    sender = null;
     closeActiveDb();
     setActiveAccount(null);
+    await instanceLock?.release();
+    instanceLock = null;
     chats = [];
   }
 
@@ -221,6 +231,20 @@ export function createAppStore(deps: Partial<AppStoreDeps> = {}): AppStore {
   async function startSession(accountId: string): Promise<void> {
     phase = "session";
     setActiveAccount(accountId);
+
+    // Two instances on one account fight over the WA session (conflict/replaced
+    // loop) and double-process the queue — refuse and fall back to the selector.
+    try {
+      instanceLock = await acquireInstanceLock(accountId);
+    } catch (err) {
+      log.error({ err, accountId }, "account is already open in another instance");
+      setActiveAccount(null);
+      phase = "select";
+      connectionInfo = { connectionState: "close", qr: null };
+      notify();
+      return;
+    }
+
     connectionInfo = { connectionState: "connecting", qr: null };
     notify();
 
@@ -236,7 +260,13 @@ export function createAppStore(deps: Partial<AppStoreDeps> = {}): AppStore {
 
     startDiskUsagePoller(accountId);
 
-    const conn = createConnection({});
+    const conn = createConnection({
+      // The processor is created just below; events only flow after conn.start().
+      enqueueJob: (type, payload) => {
+        if (!processor) return Promise.reject(new Error("job processor not ready"));
+        return processor.enqueueEvent(type, payload);
+      },
+    });
     connection = conn;
     let deadHandled = false;
     conn.on("qr", (qr: string) => setQr(qr));
@@ -250,12 +280,31 @@ export function createAppStore(deps: Partial<AppStoreDeps> = {}): AppStore {
       }
     });
 
-    ingestor = createIngestor(conn);
+    const proc = createProcessor(createFsQueue(accountId), conn, jobHandlers);
+    processor = proc;
+    proc.on("data-changed", applyDataChanges);
     sender = createSender(conn);
-    ingestor.on("chat-updated", (jid: string) => reloadChat(jid));
     sender.on("chat-updated", (jid: string) => reloadChat(jid));
 
+    // Resume whatever the last run left pending (crash replay), then self-heal
+    // recent messages whose media never linked, then go live.
+    await proc.start();
+    await proc.enqueueNamed("sweep-unlinked-media", "sweep-unlinked-media", {});
     await conn.start();
+  }
+
+  /**
+   * The processor reports what data changed; the UI decides what that means.
+   * For now every affected jid maps to a full chat reload — finer-grained
+   * updates can land here without touching the processor or handlers.
+   */
+  function applyDataChanges(changes: DataChange[]): void {
+    const jids = new Set<string>();
+    for (const change of changes) {
+      if (change.table === "accounts") for (const jid of change.jids) jids.add(jid);
+      else jids.add(change.jid);
+    }
+    for (const jid of jids) reloadChat(jid);
   }
 
   async function startLink(): Promise<void> {
@@ -295,9 +344,10 @@ export function createAppStore(deps: Partial<AppStoreDeps> = {}): AppStore {
 
     async stop(): Promise<void> {
       stopDiskUsagePoller();
-      ingestor?.stop();
-      await ingestor?.flush();
       await connection?.stop();
+      await processor?.stop();
+      await instanceLock?.release();
+      instanceLock = null;
     },
 
     subscribe(listener: () => void): () => void {
@@ -359,13 +409,17 @@ export function createAppStore(deps: Partial<AppStoreDeps> = {}): AppStore {
     },
     refreshGroupIfNeeded(jid: string): void {
       const chat = chats.find((c) => c.jid === jid);
-      if (!chat || chat.type !== "group" || !ingestor) return;
+      if (!chat || chat.type !== "group" || !processor) return;
       // No participants yet, or some still read as @lid after alias
       // canonicalization — their lid↔pn pairing is unknown, and fresh group
       // metadata is what delivers it (sender labels depend on the pairing).
       const needsRefresh =
         chat.participants.length === 0 || chat.participants.some((p) => p.jid.endsWith("@lid"));
-      if (needsRefresh) ingestor.refreshGroup(jid);
+      if (needsRefresh) {
+        void processor
+          .enqueueNamed("refresh-group-metadata", refreshGroupJobName(jid), { jid })
+          .catch((err) => log.error({ err, jid }, "failed to enqueue group refresh"));
+      }
     },
   };
 }

@@ -16,9 +16,14 @@ for the WA protocol. **Runs under Bun** (`bun src/index.ts`); tests run under
 
 ## Architecture
 
-- `src/whatsapp/` — Baileys socket (`connection.ts`), event ingestor (`ingest.ts`), message mappers, outbound send
-- `src/persistence/` — SQLite stores (`chatStore.ts`, `peerStore.ts` for person identity/names, `accounts.ts` for app logins), `paths.ts`, `mediaStore.ts`, `storageActions.ts`
-- `src/store/appStore.ts` — app state machine + React context (single source of truth for UI)
+- `src/whatsapp/` — Baileys socket (`connection.ts`), message mappers, media download, outbound send
+- `src/queue/` — durable fs job queue: every Baileys event is journaled to disk by the
+  connection listener (zero logic there — WhatsApp acks before we ever see an event), then
+  `processor.ts` executes idempotent handlers (`handlers/`) against the DB. Two lanes: db
+  (strict FIFO) and media (concurrent, paused offline). Failed jobs back off and park in
+  `failed/`; crash recovery = replaying `pending/` at startup
+- `src/persistence/` — SQLite stores (`chatStore.ts`, `peerStore.ts` for person identity/names, `accounts.ts` for app logins), `paths.ts`, `mediaStore.ts`, `storageActions.ts`, `instanceLock.ts` (one instance per account)
+- `src/store/appStore.ts` — app state machine + React context (single source of truth for UI); consumes the processor's `data-changed` events
 - `src/ui/` — screens and components; `MessageItem.tsx` owns layout math
 
 ## Testing policy
@@ -57,8 +62,14 @@ files — they are excluded from `tsconfig.json` and should not be touched.
     <accountId>/          ← raw JID, e.g. 5491100000000@s.whatsapp.net
       chats.db
       media/              ← flat; filenames: yyyy_MM_dd_HH_mm_ss_SSS__<id-suffix>.<ext>
+      queue/
+        tmp/              ← in-flight job writes (wiped at startup)
+        pending/          ← durable jobs: <seq>-<type>.json (events), media-*/enc-edit-*/… (derived)
+        failed/           ← jobs parked after exhausting retries (inspectable/replayable)
+      app.lock            ← single-instance lock { pid, startedAt }; stale-pid takeover
     .pending-<ts>/        ← auth dir during "Link new device"
   whatsapp-terminal.log
+  sync-queue.log          ← queue processor log incl. payloads (100 MB cap, .1 generation)
 ```
 
 `dataDir` resolves as (in priority order):
@@ -83,7 +94,17 @@ or how the README should change, ask before finishing.
 ## Gotchas
 
 - `syncFullHistory: true` is required for history sync; without it Baileys
-  short-circuits and never processes the full message list.
+  short-circuits and never processes the full message list. **Additionally**,
+  Baileys rc13's default `shouldSyncHistoryMessage` discards `syncType=FULL`
+  chunks — the socket config overrides it to `() => true` so deep history is
+  processed. Don't remove either flag.
+- WhatsApp acks every message **before** the app sees it (hardcoded in
+  Baileys); a message lost in memory after the event handler fires is gone
+  forever. That's why connection listeners must do nothing but journal the
+  payload into the job queue — any logic belongs in an idempotent job handler.
+- Job handlers see **JSON-round-tripped** Baileys payloads: protobuf `Long`
+  timestamps arrive as strings, bytes as Buffers (BufferJSON). Always go
+  through `timestampToMillis` for timestamps.
 - WhatsApp 405s stale WA Web versions — always call `fetchLatestBaileysVersion()`
   before creating the socket.
 - Message ids are only unique **per sender** (not globally unique per chat).
@@ -119,4 +140,13 @@ Also read the log file for runtime errors and warnings:
 
 ```
 cat ~/.local/share/whatsapp-terminal/whatsapp-terminal.log | tail -100
+```
+
+The sync queue has its own log with full job payloads — the first place to look
+when a message or media seems lost (`enqueued` → `started` → `completed` /
+`failed` / `parked` per job), plus the on-disk queue itself:
+
+```
+tail -100 ~/.local/share/whatsapp-terminal/sync-queue.log
+ls ~/.local/share/whatsapp-terminal/accounts/<accountId>/queue/{pending,failed}
 ```

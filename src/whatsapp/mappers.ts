@@ -41,13 +41,25 @@ export function rawWAMessage(message: Pick<Message, "raw">): WAMessage | null {
   return (message.raw as WAMessage | null | undefined) ?? null;
 }
 
-/** protobufjs represents 64-bit ints as `Long` (number | Long-like with toNumber()). */
-type LongLike = number | { toNumber(): number } | null | undefined;
+/** protobufjs represents 64-bit ints as `Long` (number | Long-like with toNumber()).
+ * After a JSON round-trip (job queue payloads, the `raw` column) the same value
+ * arrives as a decimal string or a plain `{low, high, unsigned}` object. */
+type LongLike =
+  | number
+  | string
+  | { toNumber(): number }
+  | { low: number; high: number; unsigned?: boolean }
+  | null
+  | undefined;
 
-/** Seconds-since-epoch (number or Long) → epoch milliseconds (0 when absent). */
+/** Seconds-since-epoch (number, Long, or round-tripped Long) → epoch milliseconds (0 when absent). */
 export function timestampToMillis(ts: LongLike): number {
   if (ts == null) return 0;
-  const n = typeof ts === "number" ? ts : ts.toNumber();
+  let n: number;
+  if (typeof ts === "number") n = ts;
+  else if (typeof ts === "string") n = Number(ts);
+  else if ("toNumber" in ts) n = ts.toNumber();
+  else n = ts.high * 4294967296 + (ts.low >>> 0);
   return Number.isFinite(n) ? n * 1000 : 0;
 }
 

@@ -52,11 +52,19 @@ on macOS, `%LOCALAPPDATA%\whatsapp-terminal\Data` on Windows — overridable wit
 | --- | --- |
 | `accounts/<id>/chats.db` | SQLite database for one account: chats, messages, reactions, group membership, the people directory (`accounts` + `account_jids` tables — every person's addresses and names), and the Baileys session credentials |
 | `accounts/<id>/media/` | Downloaded media (images, video, audio, documents, stickers, view-once) |
+| `accounts/<id>/queue/` | Durable sync queue: every WhatsApp event is journaled to `pending/` before processing and removed once applied, so a crash never loses data — leftover jobs simply resume on the next start. Jobs that keep failing are parked in `failed/` for inspection |
+| `accounts/<id>/app.lock` | Single-instance lock (see below) |
 | `whatsapp-terminal.log` | Application log (structured JSON via pino — set `WHATSAPP_TERMINAL_LOG_LEVEL` to adjust verbosity, e.g. `debug`) |
+| `sync-queue.log` | Sync-queue processor log: every job lifecycle including payloads (capped at 100 MB, one rotated generation kept as `.1`) |
 
 `<id>` is the account's own normalized WhatsApp JID (e.g. `12025550100@s.whatsapp.net`).
 Because chats are namespaced under their account, two accounts can have separate
 conversations with the same contact without collision.
+
+**One instance per account.** Opening an account that is already open in another running
+instance fails back to the account selector (two instances would fight over the WhatsApp
+session, disconnecting each other every few seconds). The lock clears itself: if the
+holding process died (even `kill -9`), the next start takes the lock over automatically.
 
 > **Breaking change:** databases created by earlier versions (schema v1) are
 > incompatible with this build. There is no migration — the app refuses to start with an
@@ -79,12 +87,24 @@ deletes its credentials (`auth/`); chat history and media are never touched.
 | `Ctrl+C` | Quit the app | Quit the app | Quit the app |
 | _(typing)_ | — | — | Edits the draft input (navigation keys above still work) |
 
+## History sync
+
+Linking a device makes the phone upload its full message history, and the app now ingests
+**all** of it — including the deep-history (`FULL`) chunks that earlier builds silently
+discarded — so old conversations are browsable after a fresh link. Media older than the
+auto-download window (below) is still listed but not fetched.
+
 ## Media auto-download
 
 Media attached to messages is downloaded automatically — but only for messages received
 within the **last 7 days**. Older messages (e.g. from a fresh history sync on a newly
 linked device) are skipped; their entry in the chat view shows a `[type — not downloaded]`
 hint instead of a file path.
+
+Messages always appear immediately; their media is fetched in the background and the view
+updates when it lands. Downloads survive restarts: an interrupted or failed download is
+retried (with backoff) from the durable queue, and on every start the app sweeps recent
+messages with missing media and re-fetches them.
 
 **Re-fetchability caveat:** WhatsApp media URLs expire within roughly the same 7-day window.
 Messages skipped by the auto-download gate may be permanently unrecoverable, even if you

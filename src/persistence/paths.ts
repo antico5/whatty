@@ -80,6 +80,11 @@ export function accountMediaDir(accountId: string): string {
   return path.join(accountDir(accountId), "media");
 }
 
+/** Durable job-queue root of an account (`tmp/`, `pending/`, `failed/` live inside). */
+export function accountQueueDir(accountId: string): string {
+  return path.join(accountDir(accountId), "queue");
+}
+
 function requireActiveAccount(): string {
   if (activeAccountId === null) {
     throw new Error("no active account — call setActiveAccount() before touching account data");
@@ -95,4 +100,9 @@ export function mediaDir(): string {
 /** Path to the app-wide log file. */
 export function logFilePath(): string {
   return path.join(dataDir(), "whatsapp-terminal.log");
+}
+
+/** Path to the queue processor's dedicated log file. */
+export function queueLogFilePath(): string {
+  return path.join(dataDir(), "sync-queue.log");
 }
