@@ -39,6 +39,7 @@ export function ConfirmModal({ message, onConfirm, onCancel }: ConfirmModalProps
 
   const noStyle = selected === 0 ? { fg: "yellow" } : {};
   const yesStyle = selected === 1 ? { fg: "yellow" } : {};
+  const lines = message.split("\n");
 
   return (
     <box
@@ -46,6 +47,7 @@ export function ConfirmModal({ message, onConfirm, onCancel }: ConfirmModalProps
       border={true}
       borderStyle="single"
       borderColor="cyan"
+      maxWidth={80}
       style={{
         position: "absolute",
         top: "25%",
@@ -57,7 +59,9 @@ export function ConfirmModal({ message, onConfirm, onCancel }: ConfirmModalProps
       }}
     >
       <box style={{ flexDirection: "column", alignItems: "center", padding: 1 }}>
-        <text {...theme.failed}>{message}</text>
+        {lines.map((line, i) => (
+          <text key={i} {...theme.failed}>{line}</text>
+        ))}
         <box style={{ marginTop: 1, flexDirection: "row" }}>
           <text {...noStyle}>{selected === 0 ? "[ No ]" : "  No  "}</text>
           <text>{"   "}</text>
