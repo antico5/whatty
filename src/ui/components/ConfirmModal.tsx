@@ -42,6 +42,10 @@ export function ConfirmModal({ message, onConfirm, onCancel }: ConfirmModalProps
 
   return (
     <box
+      backgroundColor="black"
+      border={true}
+      borderStyle="single"
+      borderColor="cyan"
       style={{
         position: "absolute",
         top: "25%",
