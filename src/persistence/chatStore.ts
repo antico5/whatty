@@ -2,7 +2,6 @@ import { getLogger } from "../logger.js";
 import {
   chatTypeOf,
   type Chat,
-  type ChatType,
   type DeliveryStatus,
   type GroupParticipant,
   type MediaRef,
@@ -96,6 +95,19 @@ function toJson(value: unknown): string | null {
   return JSON.stringify(value);
 }
 
+const DIRECTIONS: readonly Message["direction"][] = ["inbound", "outbound"];
+const MESSAGE_TYPES: readonly Message["type"][] = [
+  "text", "image", "video", "audio", "document", "sticker", "viewOnce", "other",
+];
+const DELIVERY_STATUSES: readonly DeliveryStatus[] = ["pending", "sent", "delivered", "read", "failed"];
+
+/** Validate a DB string against its expected union — unexpected values degrade to `fallback` with a warning. */
+function narrow<T extends string, F extends T | null>(value: string, allowed: readonly T[], fallback: F): T | F {
+  if ((allowed as readonly string[]).includes(value)) return value as T;
+  getLogger().warn({ value, allowed }, "unexpected enum column value — using fallback");
+  return fallback;
+}
+
 // ── read context ─────────────────────────────────────────────────────────────
 
 /**
@@ -153,13 +165,13 @@ function messageFromRow(
           ? senderLabel(sender, ctx.selfId)
           : (sender.pushName ?? null)
         : null,
-    direction: row.direction as Message["direction"],
+    direction: narrow(row.direction, DIRECTIONS, "inbound"),
     timestamp: row.timestamp,
-    type: row.type as Message["type"],
+    type: narrow(row.type, MESSAGE_TYPES, "other"),
     text: row.text,
     media: parseJson<MediaRef>(row.media),
     quoted: quotedFromJson(ctx, row.quoted),
-    deliveryStatus: row.delivery_status as DeliveryStatus | null,
+    deliveryStatus: row.delivery_status == null ? null : narrow(row.delivery_status, DELIVERY_STATUSES, null),
     deleted: row.deleted_at != null,
     deletedAt: row.deleted_at,
     raw: parseJson(row.raw),
@@ -171,8 +183,10 @@ function messageFromRow(
 
 function participantsOf(ctx: LoadCtx, chatId: number): GroupParticipant[] {
   const rows = ctx.db.sql
-    .prepare("SELECT account_id, is_admin FROM participants WHERE chat_id = ? ORDER BY rowid")
-    .all(chatId) as { account_id: number; is_admin: number | null }[];
+    .prepare<{ account_id: number; is_admin: number | null }>(
+      "SELECT account_id, is_admin FROM participants WHERE chat_id = ? ORDER BY rowid",
+    )
+    .all(chatId);
   return rows.map((r) => {
     const account = accountOf(ctx, r.account_id);
     // A participant whose account has no phone jid surfaces as `@lid` — the
@@ -188,8 +202,10 @@ function participantsOf(ctx: LoadCtx, chatId: number): GroupParticipant[] {
 
 function reactionsByMessage(ctx: LoadCtx, chatId: number): Map<string, { emoji: string; sender: string }[]> {
   const rows = ctx.db.sql
-    .prepare("SELECT message_id, sender_account_id, emoji FROM reactions WHERE chat_id = ? ORDER BY rowid")
-    .all(chatId) as { message_id: string; sender_account_id: number; emoji: string }[];
+    .prepare<{ message_id: string; sender_account_id: number; emoji: string }>(
+      "SELECT message_id, sender_account_id, emoji FROM reactions WHERE chat_id = ? ORDER BY rowid",
+    )
+    .all(chatId);
   const byId = new Map<string, { emoji: string; sender: string }[]>();
   for (const r of rows) {
     const account = accountOf(ctx, r.sender_account_id);
@@ -205,7 +221,9 @@ function chatFromRow(ctx: LoadCtx, row: ChatRow, participants: GroupParticipant[
   const peer = row.peer_account_id != null ? accountOf(ctx, row.peer_account_id) : null;
   return {
     jid: row.jid,
-    type: row.type as ChatType,
+    // The type column is written from chatTypeOf at insert; deriving it again
+    // beats trusting a string column.
+    type: chatTypeOf(row.jid),
     displayName: row.type === "individual" ? chatDisplayName(peer) : null,
     phoneNumber: peer?.phoneNumber ?? null,
     groupSubject: row.group_subject,
@@ -224,14 +242,14 @@ function chatFromRow(ctx: LoadCtx, row: ChatRow, participants: GroupParticipant[
  */
 function resolveChatRow(db: AccountDb, jid: string): ChatRow | null {
   return db.sql
-    .prepare(
+    .prepare<ChatRow>(
       `SELECT * FROM chats WHERE jid = ?1
        UNION ALL
        SELECT c.* FROM account_jids aj JOIN chats c ON c.peer_account_id = aj.account_id
        WHERE aj.jid = ?1
        LIMIT 1`,
     )
-    .get(jid) as ChatRow | undefined ?? null;
+    .get(jid) ?? null;
 }
 
 function ensureChatRow(db: AccountDb, jid: string): ChatRow {
@@ -254,10 +272,9 @@ function ensureChatRow(db: AccountDb, jid: string): ChatRow {
 
 /** The chat row of an account's individual chat, if it exists. */
 function peerChatOf(db: AccountDb, accountId: number): { id: number; jid: string } | null {
-  return db.sql.prepare("SELECT id, jid FROM chats WHERE peer_account_id = ?").get(accountId) as
-    | { id: number; jid: string }
-    | null
-    ?? null;
+  return db.sql
+    .prepare<{ id: number; jid: string }>("SELECT id, jid FROM chats WHERE peer_account_id = ?")
+    .get(accountId) ?? null;
 }
 
 /**
@@ -268,14 +285,14 @@ function peerChatOf(db: AccountDb, accountId: number): { id: number; jid: string
  */
 function groupChatsReferencingAccount(db: AccountDb, accountId: number): string[] {
   const rows = db.sql
-    .prepare(
+    .prepare<{ jid: string }>(
       `SELECT DISTINCT c.jid FROM messages m JOIN chats c ON c.id = m.chat_id
          WHERE m.sender_account_id = ?1 AND c.type = 'group'
        UNION
        SELECT c.jid FROM participants p JOIN chats c ON c.id = p.chat_id
          WHERE p.account_id = ?1`,
     )
-    .all(accountId) as { jid: string }[];
+    .all(accountId);
   return rows.map((r) => r.jid);
 }
 
@@ -286,8 +303,8 @@ function chatShell(ctx: LoadCtx, row: ChatRow): Chat {
 
 function loadMessages(ctx: LoadCtx, chatId: number, isGroup: boolean): Message[] {
   const rows = ctx.db.sql
-    .prepare("SELECT * FROM messages WHERE chat_id = ? ORDER BY timestamp, id")
-    .all(chatId) as unknown as MessageRow[];
+    .prepare<MessageRow>("SELECT * FROM messages WHERE chat_id = ? ORDER BY timestamp, id")
+    .all(chatId);
   const reactions = reactionsByMessage(ctx, chatId);
   return rows.map((r) => messageFromRow(ctx, r, isGroup, reactions.get(r.id)));
 }
@@ -320,8 +337,8 @@ function quotedToJson(db: AccountDb, quoted: QuotedRef | null): string | null {
 
 function getMessageRow(db: AccountDb, chatId: number, id: string): MessageRow | undefined {
   return db.sql
-    .prepare("SELECT * FROM messages WHERE chat_id = ? AND id = ? LIMIT 1")
-    .get(chatId, id) as MessageRow | undefined;
+    .prepare<MessageRow>("SELECT * FROM messages WHERE chat_id = ? AND id = ? LIMIT 1")
+    .get(chatId, id);
 }
 
 function upsertMessageRow(db: AccountDb, chatId: number, m: Message): void {
@@ -424,13 +441,13 @@ export async function saveChat(chat: Chat): Promise<void> {
 
 export async function listChatJids(): Promise<string[]> {
   const db = await getActiveDb();
-  const rows = db.sql.prepare("SELECT jid FROM chats").all() as { jid: string }[];
+  const rows = db.sql.prepare<{ jid: string }>("SELECT jid FROM chats").all();
   return rows.map((r) => r.jid);
 }
 
 export async function loadAllChats(): Promise<Chat[]> {
   const db = await getActiveDb();
-  const chatRows = db.sql.prepare("SELECT * FROM chats").all() as unknown as ChatRow[];
+  const chatRows = db.sql.prepare<ChatRow>("SELECT * FROM chats").all();
   // One context for the whole listing — accounts repeat heavily across chats.
   const ctx = makeCtx(db);
   return chatRows.map((row) => {
@@ -599,8 +616,10 @@ export const chatOps: ChatOps = {
     // Receipts only ever apply to our own messages; the direction filter also
     // disambiguates the realistic (chat, id) collision under the triple PK.
     const msg = db.sql
-      .prepare("SELECT delivery_status FROM messages WHERE chat_id = ? AND id = ? AND direction = 'outbound' LIMIT 1")
-      .get(row.id, messageId) as { delivery_status: string | null } | undefined;
+      .prepare<{ delivery_status: string | null }>(
+        "SELECT delivery_status FROM messages WHERE chat_id = ? AND id = ? AND direction = 'outbound' LIMIT 1",
+      )
+      .get(row.id, messageId);
     if (!msg) return false;
     const next = advanceDeliveryStatus(msg.delivery_status as DeliveryStatus | null, status);
     if (next === msg.delivery_status) return false;
@@ -681,12 +700,12 @@ export const chatOps: ChatOps = {
   async findMessageById(messageId) {
     const db = await getActiveDb();
     const stored = db.sql
-      .prepare(
+      .prepare<MessageRow & { chat_jid: string; chat_type: string }>(
         `SELECT m.*, c.jid AS chat_jid, c.type AS chat_type
          FROM messages m JOIN chats c ON c.id = m.chat_id
          WHERE m.id = ? LIMIT 1`,
       )
-      .get(messageId) as (MessageRow & { chat_jid: string; chat_type: string }) | undefined;
+      .get(messageId);
     if (!stored) return null;
     return {
       chatJid: stored.chat_jid,

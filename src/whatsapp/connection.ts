@@ -15,6 +15,7 @@ import { chatOps, loadChat, type FoundMessage } from "../persistence/chatStore.j
 import { getActiveDb, recordEvent } from "../persistence/db.js";
 import { makeDbAuthState } from "./authState.js";
 import { getLogger } from "./logger.js";
+import { rawWAMessage } from "./mappers.js";
 
 export type ConnectionStatus = "connecting" | "open" | "close" | "logged-out";
 
@@ -113,14 +114,15 @@ export async function resolveMessageContent(
   const cachedById = recentMessageContentById.get(key.id);
   if (cachedById) return cachedById;
   const chat = await deps.loadChat(jid);
-  const raw = chat?.messages.find((m) => m.id === key.id)?.raw as WAMessage | null | undefined;
+  const message = chat?.messages.find((m) => m.id === key.id);
+  const raw = message ? rawWAMessage(message) : null;
   if (raw?.message) return raw.message;
 
   // Encrypted edit target keys can use the editor's perspective of remoteJid,
   // which may point at our own LID instead of the chat that stores the
   // message — fall back to the indexed cross-chat lookup by id.
   const found = await deps.findMessageById(key.id);
-  const fallbackRaw = found?.message.raw as WAMessage | null | undefined;
+  const fallbackRaw = found ? rawWAMessage(found.message) : null;
   return fallbackRaw?.message ?? undefined;
 }
 

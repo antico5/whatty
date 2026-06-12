@@ -61,8 +61,8 @@ interface AccountRow {
 
 function jidsOf(db: AccountDb, accountId: number): string[] {
   const rows = db.sql
-    .prepare("SELECT jid FROM account_jids WHERE account_id = ? ORDER BY rowid")
-    .all(accountId) as { jid: string }[];
+    .prepare<{ jid: string }>("SELECT jid FROM account_jids WHERE account_id = ? ORDER BY rowid")
+    .all(accountId);
   return rows.map((r) => r.jid);
 }
 
@@ -78,14 +78,14 @@ function recordFromRow(db: AccountDb, row: AccountRow): AccountRecord {
 }
 
 export function accountById(db: AccountDb, id: number): AccountRecord | null {
-  const row = db.sql.prepare("SELECT * FROM accounts WHERE id = ?").get(id) as AccountRow | undefined;
+  const row = db.sql.prepare<AccountRow>("SELECT * FROM accounts WHERE id = ?").get(id);
   return row ? recordFromRow(db, row) : null;
 }
 
 export function accountByJid(db: AccountDb, jid: string): AccountRecord | null {
   const row = db.sql
-    .prepare("SELECT a.* FROM account_jids aj JOIN accounts a ON a.id = aj.account_id WHERE aj.jid = ?")
-    .get(jid) as AccountRow | undefined;
+    .prepare<AccountRow>("SELECT a.* FROM account_jids aj JOIN accounts a ON a.id = aj.account_id WHERE aj.jid = ?")
+    .get(jid);
   return row ? recordFromRow(db, row) : null;
 }
 
@@ -135,9 +135,9 @@ function mergeAccounts(db: AccountDb, winnerId: number, loserId: number): void {
 
   // Individual chats are UNIQUE per peer: when both accounts have one, fold
   // the loser's chat into the winner's.
-  const chatOf = db.sql.prepare("SELECT id, jid FROM chats WHERE peer_account_id = ?");
-  const winnerChat = chatOf.get(winnerId) as { id: number; jid: string } | undefined;
-  const loserChat = chatOf.get(loserId) as { id: number; jid: string } | undefined;
+  const chatOf = db.sql.prepare<{ id: number; jid: string }>("SELECT id, jid FROM chats WHERE peer_account_id = ?");
+  const winnerChat = chatOf.get(winnerId);
+  const loserChat = chatOf.get(loserId);
   if (winnerChat && loserChat) {
     db.sql.prepare("UPDATE OR REPLACE messages SET chat_id = ?1 WHERE chat_id = ?2").run(winnerChat.id, loserChat.id);
     db.sql.prepare("UPDATE OR REPLACE reactions SET chat_id = ?1 WHERE chat_id = ?2").run(winnerChat.id, loserChat.id);
@@ -180,8 +180,10 @@ export function ensureAccount(db: AccountDb, obs: AccountObservation): number {
   return db.transaction(() => {
     const placeholders = jids.map(() => "?").join(", ");
     const matches = db.sql
-      .prepare(`SELECT DISTINCT account_id FROM account_jids WHERE jid IN (${placeholders}) ORDER BY account_id`)
-      .all(...jids) as { account_id: number }[];
+      .prepare<{ account_id: number }>(
+        `SELECT DISTINCT account_id FROM account_jids WHERE jid IN (${placeholders}) ORDER BY account_id`,
+      )
+      .all(...jids);
 
     let id: number;
     if (matches.length === 0) {
@@ -192,12 +194,12 @@ export function ensureAccount(db: AccountDb, obs: AccountObservation): number {
       // keyed canonically), lower id as tie-break.
       const ids = matches.map((m) => m.account_id);
       const phoneOwner = db.sql
-        .prepare(
+        .prepare<{ account_id: number }>(
           `SELECT account_id FROM account_jids
            WHERE account_id IN (${ids.map(() => "?").join(", ")}) AND jid LIKE '%@s.whatsapp.net'
            ORDER BY account_id LIMIT 1`,
         )
-        .get(...ids) as { account_id: number } | undefined;
+        .get(...ids);
       id = phoneOwner?.account_id ?? ids[0]!;
       for (const other of ids) {
         if (other !== id) mergeAccounts(db, id, other);
@@ -231,13 +233,13 @@ export function ensureAccount(db: AccountDb, obs: AccountObservation): number {
  * the phone jid, regardless of which event delivered the pairing.
  */
 function rekeyPeerChat(db: AccountDb, accountId: number): void {
-  const chat = db.sql.prepare("SELECT id, jid FROM chats WHERE peer_account_id = ?").get(accountId) as
-    | { id: number; jid: string }
-    | undefined;
+  const chat = db.sql
+    .prepare<{ id: number; jid: string }>("SELECT id, jid FROM chats WHERE peer_account_id = ?")
+    .get(accountId);
   if (!chat || chat.jid.endsWith("@s.whatsapp.net")) return;
   const phone = db.sql
-    .prepare("SELECT jid FROM account_jids WHERE account_id = ? AND jid LIKE '%@s.whatsapp.net' LIMIT 1")
-    .get(accountId) as { jid: string } | undefined;
+    .prepare<{ jid: string }>("SELECT jid FROM account_jids WHERE account_id = ? AND jid LIKE '%@s.whatsapp.net' LIMIT 1")
+    .get(accountId);
   if (!phone || phone.jid === chat.jid) return;
   db.sql.prepare("UPDATE OR IGNORE chats SET jid = ? WHERE id = ?").run(phone.jid, chat.id);
   getLogger().info({ from: chat.jid, to: phone.jid }, "re-keyed individual chat to phone jid");

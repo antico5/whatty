@@ -29,6 +29,7 @@ import {
   mapGroupParticipants,
   mapWAMessage,
   MEDIA_CONTENT_KEYS,
+  rawWAMessage,
   timestampToMillis,
   verifiedBizNameFromMessages,
 } from "./mappers.js";
@@ -283,7 +284,7 @@ export function createIngestor(conn: Connection, deps: Partial<IngestorDeps> = {
         ]);
         return false;
       }
-      const originalRaw = original.raw as WAMessage | null | undefined;
+      const originalRaw = rawWAMessage(original);
       const historyKey = originalRaw?.key ?? targetKey ?? waMsg.key;
       const historyTimestamp = originalRaw?.messageTimestamp ?? original.timestamp / 1000;
       const historyRequests = [

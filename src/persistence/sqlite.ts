@@ -17,16 +17,17 @@ export interface SqlRunResult {
   lastInsertRowid: number;
 }
 
-export interface SqlStatement {
+export interface SqlStatement<T extends object = Record<string, unknown>> {
   run(...params: SqlParam[]): SqlRunResult;
-  get(...params: SqlParam[]): Record<string, unknown> | undefined;
-  all(...params: SqlParam[]): Record<string, unknown>[];
+  get(...params: SqlParam[]): T | undefined;
+  all(...params: SqlParam[]): T[];
 }
 
 export interface SqlDatabase {
   /** Execute a single statement with no result (DDL, PRAGMA, BEGIN/COMMIT). */
   exec(sql: string): void;
-  prepare(sql: string): SqlStatement;
+  /** `T` is the caller's asserted row shape — declared once, next to the SQL. */
+  prepare<T extends object = Record<string, unknown>>(sql: string): SqlStatement<T>;
   close(): void;
 }
 
@@ -54,16 +55,17 @@ function wrap(raw: RawDatabase): SqlDatabase {
   return {
     exec: (sql) => raw.exec(sql),
     close: () => raw.close(),
-    prepare(sql) {
+    prepare<T extends object>(sql: string) {
       const stmt = raw.prepare(sql);
+      // The sole row-shape assertion: callers declare T at the prepare() site.
       return {
         run: (...params) => {
           const r = stmt.run(...coerce(params));
           return { changes: Number(r.changes), lastInsertRowid: Number(r.lastInsertRowid) };
         },
-        get: (...params) => stmt.get(...coerce(params)) ?? undefined,
-        all: (...params) => stmt.all(...coerce(params)),
-      };
+        get: (...params) => (stmt.get(...coerce(params)) ?? undefined) as unknown as T | undefined,
+        all: (...params) => stmt.all(...coerce(params)) as unknown as T[],
+      } satisfies SqlStatement<T>;
     },
   };
 }

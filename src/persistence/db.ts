@@ -118,7 +118,7 @@ export interface AccountDb {
 }
 
 function migrate(sql: SqlDatabase): void {
-  const row = sql.prepare("PRAGMA user_version").get() as { user_version: number };
+  const row = sql.prepare<{ user_version: number }>("PRAGMA user_version").get()!;
   if (row.user_version >= SCHEMA_VERSION) return;
   // No migration path exists from older schemas, and we never delete chat
   // data ourselves — the user must wipe the data dir and re-link the device.

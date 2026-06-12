@@ -24,9 +24,7 @@ function fixId(id: string): string {
 }
 
 function readValue(db: AccountDb, key: string): unknown {
-  const row = db.sql.prepare("SELECT value FROM auth_kv WHERE key = ?").get(key) as
-    | { value: string }
-    | undefined;
+  const row = db.sql.prepare<{ value: string }>("SELECT value FROM auth_kv WHERE key = ?").get(key);
   if (!row) return null;
   return JSON.parse(row.value, BufferJSON.reviver);
 }

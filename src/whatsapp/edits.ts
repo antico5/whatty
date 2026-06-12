@@ -1,6 +1,7 @@
 import { createDecipheriv, createHmac } from "node:crypto";
 import { jidNormalizedUser, proto, type WAMessage } from "baileys";
 import type { Message } from "../types/index.js";
+import { rawWAMessage } from "./mappers.js";
 
 interface EncryptedEdit {
   targetId: string;
@@ -35,13 +36,12 @@ export function encryptedEditOf(waMsg: WAMessage): EncryptedEdit | null {
 }
 
 export function isPersistedEditEnvelope(message: Message): boolean {
-  const raw = message.raw as WAMessage | null | undefined;
+  const raw = rawWAMessage(message);
   return Boolean(raw && encryptedEditOf(raw));
 }
 
 function messageSecretOf(message: Message): Uint8Array | null {
-  const raw = message.raw as WAMessage | null | undefined;
-  return bytesOf(raw?.message?.messageContextInfo?.messageSecret);
+  return bytesOf(rawWAMessage(message)?.message?.messageContextInfo?.messageSecret);
 }
 
 function hmac(data: Uint8Array, key: Uint8Array): Buffer {

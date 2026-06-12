@@ -32,6 +32,15 @@ export const MEDIA_CONTENT_KEYS = new Set([
 
 type WAMessageRecord = Record<string, unknown>;
 
+/**
+ * The persisted Baileys envelope, if this message carries one. `Message.raw`
+ * is `unknown` in storage; this is the single sanctioned narrowing back to
+ * `WAMessage` — don't cast `raw` anywhere else.
+ */
+export function rawWAMessage(message: Pick<Message, "raw">): WAMessage | null {
+  return (message.raw as WAMessage | null | undefined) ?? null;
+}
+
 /** protobufjs represents 64-bit ints as `Long` (number | Long-like with toNumber()). */
 type LongLike = number | { toNumber(): number } | null | undefined;
 
