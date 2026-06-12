@@ -97,6 +97,14 @@ const SCHEMA: string[] = [
   )`,
 ];
 
+/** Indexes added after a schema version shipped. `SCHEMA` only runs on fresh
+ * DBs (no migration path), so these are applied on every open — additive and
+ * idempotent, no version bump needed. */
+const ADDITIVE_INDEXES = [
+  `CREATE INDEX IF NOT EXISTS idx_messages_sender ON messages(sender_account_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_participants_account ON participants(account_id)`,
+];
+
 const EVENTS_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const EVENTS_MAX_ROWS = 100_000;
 const EVENT_PAYLOAD_MAX_CHARS = 64_000;
@@ -132,6 +140,7 @@ export async function openAccountDb(accountId: string): Promise<AccountDb> {
   sql.exec("PRAGMA journal_mode = WAL");
   sql.exec("PRAGMA synchronous = NORMAL");
   migrate(sql);
+  for (const stmt of ADDITIVE_INDEXES) sql.exec(stmt);
 
   let inTx = false;
   return {

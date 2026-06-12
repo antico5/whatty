@@ -260,6 +260,25 @@ function peerChatOf(db: AccountDb, accountId: number): { id: number; jid: string
     ?? null;
 }
 
+/**
+ * Group chats whose rendered labels reference this account (as message sender
+ * or participant) — they must reload when the account changes, or an open
+ * group keeps a stale sender label until its next event (e.g. a lid-only
+ * sender whose phone pairing arrives minutes later).
+ */
+function groupChatsReferencingAccount(db: AccountDb, accountId: number): string[] {
+  const rows = db.sql
+    .prepare(
+      `SELECT DISTINCT c.jid FROM messages m JOIN chats c ON c.id = m.chat_id
+         WHERE m.sender_account_id = ?1 AND c.type = 'group'
+       UNION
+       SELECT c.jid FROM participants p JOIN chats c ON c.id = p.chat_id
+         WHERE p.account_id = ?1`,
+    )
+    .all(accountId) as { jid: string }[];
+  return rows.map((r) => r.jid);
+}
+
 /** Chat meta + participants, without messages. */
 function chatShell(ctx: LoadCtx, row: ChatRow): Chat {
   return chatFromRow(ctx, row, participantsOf(ctx, row.id), []);
@@ -494,6 +513,7 @@ export const chatOps: ChatOps = {
       const accountId = ensureAccount(db, { jids: [lidJid, phoneJid] });
       const chat = peerChatOf(db, accountId);
       if (chat) affected.add(chat.jid);
+      for (const jid of groupChatsReferencingAccount(db, accountId)) affected.add(jid);
       return [...affected];
     });
   },
@@ -528,6 +548,7 @@ export const chatOps: ChatOps = {
         for (const jid of beforeChats) affected.add(jid);
         const chat = peerChatOf(db, accountId);
         if (chat) affected.add(chat.jid);
+        for (const jid of groupChatsReferencingAccount(db, accountId)) affected.add(jid);
       }
       return [...affected];
     });
