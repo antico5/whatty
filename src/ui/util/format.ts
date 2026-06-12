@@ -1,4 +1,4 @@
-import type { Chat, DeliveryStatus, MessageDirection, MessageType } from "../../types/index.js";
+import type { Chat, DeliveryStatus, GroupParticipant, MessageDirection, MessageType } from "../../types/index.js";
 import { theme, type TextStyle } from "../theme.js";
 
 /**
@@ -230,6 +230,27 @@ export function formatBytes(bytes: number): string {
   }
   if (unitIndex === 0) return `${bytes} B`;
   return `${value.toFixed(1)} ${BYTE_UNITS[unitIndex]}`;
+}
+
+/**
+ * Replace WhatsApp `@phonedigits` mention tokens in `text` with `@DisplayName`
+ * resolved from the chat's participant list. Unrecognised tokens are left as-is.
+ * Label priority matches `GroupParticipant.displayName`: contactName → verifiedName
+ * → pushName → `+phonedigits` derived from the JID.
+ */
+export function resolveMentions(text: string, participants: GroupParticipant[]): string {
+  const byDigits = new Map<string, string>();
+  for (const p of participants) {
+    if (!p.jid.endsWith("@s.whatsapp.net")) continue;
+    const digits = p.jid.split("@")[0];
+    if (!digits) continue;
+    byDigits.set(digits, p.displayName ?? `+${digits}`);
+  }
+  if (!byDigits.size) return text;
+  return text.replace(/@(\d+)/g, (match, digits: string) => {
+    const label = byDigits.get(digits);
+    return label != null ? `@${label}` : match;
+  });
 }
 
 /** Greedy word-wrap to at most `width` columns per line; hard-breaks words longer than `width`. */

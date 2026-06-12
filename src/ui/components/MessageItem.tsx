@@ -7,6 +7,7 @@ import {
   formatMessageTime,
   mediaTypeLabel,
   messageTicks,
+  resolveMentions,
   truncate,
   wrapText,
   type MessageTicks,
@@ -51,6 +52,11 @@ function layoutLines(message: Message, chat: Chat, maxWidth: number): LineData[]
     lines.push({ kind: "quoted", text: truncate(`‹${message.quoted.sender ?? "Unknown"}›: ${message.quoted.snippet}`, maxWidth) });
   }
 
+  const resolvedText =
+    chat.type === "group" && message.text
+      ? resolveMentions(message.text, chat.participants)
+      : message.text;
+
   if (message.media) {
     const absPath = absoluteMediaPath(message.media);
     const typeLabel = mediaTypeLabel(message.type);
@@ -71,8 +77,8 @@ function layoutLines(message: Message, chat: Chat, maxWidth: number): LineData[]
         lines.push({ kind: "media", text: media.slice(i, i + maxWidth) });
       }
     }
-    if (message.text) {
-      for (const line of wrapText(message.text, maxWidth)) lines.push({ kind: "text", text: line });
+    if (resolvedText) {
+      for (const line of wrapText(resolvedText, maxWidth)) lines.push({ kind: "text", text: line });
     }
   } else {
     // No downloaded media — show the type label as a hint when the message type
@@ -83,8 +89,8 @@ function layoutLines(message: Message, chat: Chat, maxWidth: number): LineData[]
       const hint = `${typeLabel} not downloaded`;
       lines.push({ kind: "text", text: truncate(hint, maxWidth) });
     }
-    if (message.text) {
-      for (const line of wrapText(message.text, maxWidth)) lines.push({ kind: "text", text: line });
+    if (resolvedText) {
+      for (const line of wrapText(resolvedText, maxWidth)) lines.push({ kind: "text", text: line });
     }
   }
 
