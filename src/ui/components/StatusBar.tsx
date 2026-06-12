@@ -23,6 +23,8 @@ export function StatusBar() {
           {formatBytes(diskUsage.db)}
           {"  media: "}
           {formatBytes(diskUsage.media)}
+          {"  logs: "}
+          {formatBytes(diskUsage.logs)}
         </text>
       ) : null}
       {readonly ? <text fg="cyan">{"  read-only"}</text> : null}

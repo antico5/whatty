@@ -1,11 +1,12 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { accountDbFile, accountMediaDir, accountsRootDir, logFilePath } from "./paths.js";
+import { accountDbFile, accountMediaDir, accountsRootDir, logFilePath, queueLogFilePath } from "./paths.js";
 export { logFilePath };
 
 export interface DiskUsage {
   db: number;
   media: number;
+  logs: number;
   total: number;
 }
 
@@ -78,14 +79,21 @@ export async function mediaBreakdown(accountId: string): Promise<MediaBreakdown>
   return result;
 }
 
-/** Size of the app-wide log file (0 if absent). */
+/** Combined size of all log files (main + queue, including .1 generations). */
 export async function logSize(): Promise<number> {
-  try {
-    const stat = await fs.stat(logFilePath());
-    return stat.size;
-  } catch {
-    return 0;
-  }
+  const candidates = [logFilePath(), `${logFilePath()}.1`, queueLogFilePath(), `${queueLogFilePath()}.1`];
+  let total = 0;
+  await Promise.all(
+    candidates.map(async (p) => {
+      try {
+        const stat = await fs.stat(p);
+        total += stat.size;
+      } catch {
+        // absent — not yet written or no rotation generation
+      }
+    }),
+  );
+  return total;
 }
 
 /**
@@ -136,16 +144,16 @@ export async function mediaSize(accountId: string): Promise<number> {
  * Total = db + media + the app log file (if present).
  */
 export async function totalSize(accountId: string): Promise<number> {
-  const [db, media, logBytes] = await Promise.all([dbSize(accountId), mediaSize(accountId), logSize()]);
-  return db + media + logBytes;
+  const [db, media, logs] = await Promise.all([dbSize(accountId), mediaSize(accountId), logSize()]);
+  return db + media + logs;
 }
 
 /**
  * Compute all three sizes in one pass (avoids re-computing db/media for total).
  */
 export async function getDiskUsage(accountId: string): Promise<DiskUsage> {
-  const [db, media, logBytes] = await Promise.all([dbSize(accountId), mediaSize(accountId), logSize()]);
-  return { db, media, total: db + media + logBytes };
+  const [db, media, logs] = await Promise.all([dbSize(accountId), mediaSize(accountId), logSize()]);
+  return { db, media, logs, total: db + media + logs };
 }
 
 /**
