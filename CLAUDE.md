@@ -68,6 +68,12 @@ files — they are excluded from `tsconfig.json` and should not be touched.
 3. `~/Library/Application Support/whatsapp-terminal` (macOS)
 4. `%LOCALAPPDATA%\whatsapp-terminal\Data` (Windows)
 
+## Commit policy
+
+Every prompt that modifies files produces exactly one commit — committed
+immediately after the changes, before the next prompt. No batching across
+prompts. No `Co-Authored-By` line in commit messages.
+
 ## README policy
 
 Any user-facing feature change (new behavior, keybinding, screen, config,
