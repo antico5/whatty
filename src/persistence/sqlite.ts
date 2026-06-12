@@ -14,6 +14,7 @@ export type SqlParam = SqlValue | boolean | undefined;
 
 export interface SqlRunResult {
   changes: number;
+  lastInsertRowid: number;
 }
 
 export interface SqlStatement {
@@ -38,7 +39,7 @@ function coerce(params: SqlParam[]): SqlValue[] {
 }
 
 interface RawStatement {
-  run(...params: SqlValue[]): { changes: number | bigint };
+  run(...params: SqlValue[]): { changes: number | bigint; lastInsertRowid: number | bigint };
   get(...params: SqlValue[]): Record<string, unknown> | null | undefined;
   all(...params: SqlValue[]): Record<string, unknown>[];
 }
@@ -56,7 +57,10 @@ function wrap(raw: RawDatabase): SqlDatabase {
     prepare(sql) {
       const stmt = raw.prepare(sql);
       return {
-        run: (...params) => ({ changes: Number(stmt.run(...coerce(params)).changes) }),
+        run: (...params) => {
+          const r = stmt.run(...coerce(params));
+          return { changes: Number(r.changes), lastInsertRowid: Number(r.lastInsertRowid) };
+        },
         get: (...params) => stmt.get(...coerce(params)) ?? undefined,
         all: (...params) => stmt.all(...coerce(params)),
       };

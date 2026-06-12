@@ -17,7 +17,7 @@ for the WA protocol. **Runs under Bun** (`bun src/index.ts`); tests run under
 ## Architecture
 
 - `src/whatsapp/` — Baileys socket (`connection.ts`), event ingestor (`ingest.ts`), message mappers, outbound send
-- `src/persistence/` — SQLite stores (`chatStore.ts`, `accounts.ts`), `paths.ts`, `mediaStore.ts`, `storageActions.ts`
+- `src/persistence/` — SQLite stores (`chatStore.ts`, `peerStore.ts` for person identity/names, `accounts.ts` for app logins), `paths.ts`, `mediaStore.ts`, `storageActions.ts`
 - `src/store/appStore.ts` — app state machine + React context (single source of truth for UI)
 - `src/ui/` — screens and components; `MessageItem.tsx` owns layout math
 
@@ -33,8 +33,15 @@ files — they are excluded from `tsconfig.json` and should not be touched.
   The sole exceptions are the explicitly-destructive functions in
   `src/persistence/storageActions.ts` (all suffixed `Destructive`), called only
   from the Storage screen behind a confirm modal.
-- Canonical chat identity is the **phone JID** (`…@s.whatsapp.net`). `@lid`
-  addresses are alias rows in the DB; ingest routes them to the phone-JID record.
+- Person identity is the **`accounts` table** (surrogate integer id, in
+  `src/persistence/peerStore.ts` — distinct from `accounts.ts`, the app-login
+  store); `account_jids` maps every address (`…@s.whatsapp.net`, `…@lid`) onto
+  one account row. Individual chats are keyed by `peer_account_id`, so both
+  address spaces reach the same chat with no folding; `chats.jid` holds the
+  preferred (phone-first) jid. All names (push/contact/verified) live on the
+  account row; display labels are derived at load time, never stored
+  per-message or per-participant — the store must never write name fields
+  from loaded aggregates (they contain resolved labels).
 - **One DB per account**, WAL mode. Media lives flat on the filesystem under
   `<accountDir>/media/`; the DB stores only `MediaRef` JSON.
 - **Lurk-friendly:** `markOnlineOnConnect: false` — we never broadcast presence
@@ -92,8 +99,8 @@ console.log(db.query('SELECT ...').all());
 ```
 
 Account dirs are under `~/.local/share/whatsapp-terminal/accounts/`. Always
-inspect actual rows (chats, messages, aliases, participants) before concluding
-what the data does or doesn't contain.
+inspect actual rows (accounts, account_jids, chats, messages, participants)
+before concluding what the data does or doesn't contain.
 
 The `events` table records every Baileys event that was ingested — query it to
 see what actually arrived from WhatsApp vs. what the code expected:

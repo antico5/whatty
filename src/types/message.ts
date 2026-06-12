@@ -20,13 +20,19 @@ export interface MediaRef {
 
 export interface QuotedRef {
   messageId: string;
+  /** Raw sender jid on the way into the store; resolved display label (or "You") on the way out. */
   sender: string | null;
+  /** Sender's accounts-table id, set by the store at load so re-saving an aggregate stays lossless. */
+  senderAccountId?: number | null;
   snippet: string;
 }
 
 export interface Message {
   id: string;
+  /** Raw sender jid on the way into the store; the sender account's preferred (phone-first) jid on the way out. */
   senderJid: string | null;
+  /** Push name on the way into the store (landed on the sender's account row, not persisted per-message);
+   * resolved display label on the way out (group inbound only). */
   senderName: string | null;
   direction: MessageDirection;
   timestamp: number;

@@ -43,20 +43,25 @@ re-links later via QR, the account reappears in the selector and resumes its pre
 
 ## Where data is stored
 
-Everything lives under a `data/` directory created alongside wherever you run the app
-(override the location with the `WHATSAPP_TERMINAL_DATA_DIR` environment variable):
+Everything lives under the platform data directory — `~/.local/share/whatsapp-terminal`
+on Linux (honouring `$XDG_DATA_HOME`), `~/Library/Application Support/whatsapp-terminal`
+on macOS, `%LOCALAPPDATA%\whatsapp-terminal\Data` on Windows — overridable with the
+`WHATSAPP_TERMINAL_DATA_DIR` environment variable:
 
 | Path | Contents |
 | --- | --- |
-| `data/accounts/<id>/auth/` | Baileys session credentials for one account |
-| `data/accounts/<id>/chats/<jid>/chats.json` | Full record for one chat: metadata, messages, delivery/deleted state |
-| `data/accounts/<id>/chats/<jid>/media/` | Downloaded media (images, video, audio, documents, stickers, view-once) |
-| `data/whatsapp-terminal.log` | Application log (structured JSON via pino — set `WHATSAPP_TERMINAL_LOG_LEVEL` to adjust verbosity, e.g. `debug`) |
+| `accounts/<id>/chats.db` | SQLite database for one account: chats, messages, reactions, group membership, the people directory (`accounts` + `account_jids` tables — every person's addresses and names), and the Baileys session credentials |
+| `accounts/<id>/media/` | Downloaded media (images, video, audio, documents, stickers, view-once) |
+| `whatsapp-terminal.log` | Application log (structured JSON via pino — set `WHATSAPP_TERMINAL_LOG_LEVEL` to adjust verbosity, e.g. `debug`) |
 
 `<id>` is the account's own normalized WhatsApp JID (e.g. `12025550100@s.whatsapp.net`).
-`<jid>` is the chat's WhatsApp ID — a phone number for 1:1 chats or a group ID
-(e.g. `120363000000000001@g.us`). Because chats are namespaced under their account, two
-accounts can have separate conversations with the same contact without collision.
+Because chats are namespaced under their account, two accounts can have separate
+conversations with the same contact without collision.
+
+> **Breaking change:** databases created by earlier versions (schema v1) are
+> incompatible with this build. There is no migration — the app refuses to start with an
+> error until you delete the data directory and re-link your device (history is then
+> re-synced from your phone).
 
 **Nothing is ever deleted.** Sync with your phone is purely additive: it can update or
 extend local records, but a chat or message that exists locally is never removed — even if

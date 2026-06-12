@@ -7,11 +7,22 @@ import {
   type GroupParticipant,
   type MediaRef,
   type Message,
+  type QuotedRef,
 } from "../types/index.js";
 import { advanceDeliveryStatus, mergeChatMeta, tombstone, upsertChat } from "./reconcile.js";
 import { getActiveDb, type AccountDb } from "./db.js";
-import { resolveSenderLabel } from "./contacts.js";
-import { getActiveAccount } from "./paths.js";
+import {
+  accountById,
+  accountByJid,
+  chatDisplayName,
+  ensureAccount,
+  preferredJid,
+  selfAccountId,
+  senderLabel,
+  UNKNOWN_ACCOUNT_ID,
+  type AccountObservation,
+  type AccountRecord,
+} from "./peerStore.js";
 
 /**
  * SQLite-backed chat store. Two API tiers:
@@ -19,31 +30,38 @@ import { getActiveAccount } from "./paths.js";
  * - The whole-chat tier (`loadChat`/`saveChat`/`loadAllChats`) keeps the
  *   pre-SQLite contract: a `Chat` aggregate in, a `Chat` aggregate out.
  *   `saveChat` is a full row replacement — correct but write-amplified, so
- *   it's reserved for infrequent paths (sending, alias merges, import).
+ *   it's reserved for infrequent paths (sending, import).
  *
  * - `chatOps` is the targeted tier used by live ingestion: each operation
  *   touches only the rows it needs (a receipt updates one column of one row
  *   instead of rewriting a 3,000-message chat).
  *
- * Every entry point resolves `aliases` first, so events addressed to a chat's
- * `@lid` identity land on the canonical (phone-jid) record.
+ * The public API stays keyed by jid strings; internally every entry point
+ * resolves the jid to a chat row once — individual chats are found through
+ * `account_jids` → `peer_account_id`, so a `@lid` jid and a phone jid hit the
+ * same chat without any folding.
+ *
+ * Name policy: this module NEVER writes name fields from aggregates. Loaded
+ * aggregates carry *resolved labels* in `senderName`/participant
+ * `displayName`, so writing them back would poison the accounts table with
+ * formatted strings. All name sightings flow exclusively through
+ * `chatOps.observeAccounts` (called by ingest with raw event data).
  */
 
 interface ChatRow {
+  id: number;
   jid: string;
   type: string;
-  display_name: string | null;
-  phone_number: string | null;
+  peer_account_id: number | null;
   group_subject: string | null;
   archived: number;
   last_activity: number;
 }
 
 interface MessageRow {
-  chat_jid: string;
+  chat_id: number;
   id: string;
-  sender_jid: string | null;
-  sender_name: string | null;
+  sender_account_id: number;
   direction: string;
   timestamp: number;
   type: string;
@@ -54,6 +72,13 @@ interface MessageRow {
   media: string | null;
   quoted: string | null;
   raw: string | null;
+}
+
+/** Shape of the `messages.quoted` JSON column. */
+interface PersistedQuoted {
+  messageId: string;
+  senderAccountId: number | null;
+  snippet: string;
 }
 
 function parseJson<T>(text: string | null): T | null {
@@ -71,17 +96,69 @@ function toJson(value: unknown): string | null {
   return JSON.stringify(value);
 }
 
-function messageFromRow(row: MessageRow, reactions?: { emoji: string; sender: string }[]): Message {
+// ── read context ─────────────────────────────────────────────────────────────
+
+/**
+ * Per-load context: caches account rows so a 500-message group does one DB
+ * lookup per distinct sender, not per message. Shared across messages, quoted
+ * refs, reactions and participants of one load (or all chats in loadAllChats).
+ */
+interface LoadCtx {
+  db: AccountDb;
+  selfId: number;
+  accounts: Map<number, AccountRecord | null>;
+}
+
+function makeCtx(db: AccountDb): LoadCtx {
+  return { db, selfId: selfAccountId(db), accounts: new Map() };
+}
+
+function accountOf(ctx: LoadCtx, id: number): AccountRecord | null {
+  if (id === UNKNOWN_ACCOUNT_ID) return null;
+  let account = ctx.accounts.get(id);
+  if (account === undefined) {
+    account = accountById(ctx.db, id);
+    ctx.accounts.set(id, account);
+  }
+  return account;
+}
+
+function quotedFromJson(ctx: LoadCtx, json: string | null): QuotedRef | null {
+  const persisted = parseJson<PersistedQuoted>(json);
+  if (!persisted) return null;
+  const account = persisted.senderAccountId != null ? accountOf(ctx, persisted.senderAccountId) : null;
+  return {
+    messageId: persisted.messageId,
+    sender: account ? senderLabel(account, ctx.selfId) : null,
+    senderAccountId: persisted.senderAccountId,
+    snippet: persisted.snippet,
+  };
+}
+
+function messageFromRow(
+  ctx: LoadCtx,
+  row: MessageRow,
+  isGroup: boolean,
+  reactions?: { emoji: string; sender: string }[],
+): Message {
+  const sender = accountOf(ctx, row.sender_account_id);
   const message: Message = {
     id: row.id,
-    senderJid: row.sender_jid,
-    senderName: row.sender_name,
+    senderJid: sender ? preferredJid(sender) : null,
+    // Group inbound renders a sender line — resolve the full label; otherwise
+    // surface the bare push name (parity with what the old schema stored).
+    senderName:
+      row.direction === "inbound" && sender
+        ? isGroup
+          ? senderLabel(sender, ctx.selfId)
+          : (sender.pushName ?? null)
+        : null,
     direction: row.direction as Message["direction"],
     timestamp: row.timestamp,
     type: row.type as Message["type"],
     text: row.text,
     media: parseJson<MediaRef>(row.media),
-    quoted: parseJson<Message["quoted"]>(row.quoted),
+    quoted: quotedFromJson(ctx, row.quoted),
     deliveryStatus: row.delivery_status as DeliveryStatus | null,
     deleted: row.deleted_at != null,
     deletedAt: row.deleted_at,
@@ -92,12 +169,45 @@ function messageFromRow(row: MessageRow, reactions?: { emoji: string; sender: st
   return message;
 }
 
-function chatFromRow(row: ChatRow, participants: GroupParticipant[], messages: Message[]): Chat {
+function participantsOf(ctx: LoadCtx, chatId: number): GroupParticipant[] {
+  const rows = ctx.db.sql
+    .prepare("SELECT account_id, is_admin FROM participants WHERE chat_id = ? ORDER BY rowid")
+    .all(chatId) as { account_id: number; is_admin: number | null }[];
+  return rows.map((r) => {
+    const account = accountOf(ctx, r.account_id);
+    // A participant whose account has no phone jid surfaces as `@lid` — the
+    // store's cue (used by the app store) to refresh group metadata.
+    const p: GroupParticipant = {
+      jid: (account && preferredJid(account)) ?? `${r.account_id}`,
+      displayName: account ? (account.contactName ?? account.verifiedName ?? account.pushName) : null,
+    };
+    if (r.is_admin != null) p.isAdmin = r.is_admin !== 0;
+    return p;
+  });
+}
+
+function reactionsByMessage(ctx: LoadCtx, chatId: number): Map<string, { emoji: string; sender: string }[]> {
+  const rows = ctx.db.sql
+    .prepare("SELECT message_id, sender_account_id, emoji FROM reactions WHERE chat_id = ? ORDER BY rowid")
+    .all(chatId) as { message_id: string; sender_account_id: number; emoji: string }[];
+  const byId = new Map<string, { emoji: string; sender: string }[]>();
+  for (const r of rows) {
+    const account = accountOf(ctx, r.sender_account_id);
+    const sender = (account && preferredJid(account)) ?? `${r.sender_account_id}`;
+    const list = byId.get(r.message_id) ?? [];
+    list.push({ emoji: r.emoji, sender });
+    byId.set(r.message_id, list);
+  }
+  return byId;
+}
+
+function chatFromRow(ctx: LoadCtx, row: ChatRow, participants: GroupParticipant[], messages: Message[]): Chat {
+  const peer = row.peer_account_id != null ? accountOf(ctx, row.peer_account_id) : null;
   return {
     jid: row.jid,
     type: row.type as ChatType,
-    displayName: row.display_name,
-    phoneNumber: row.phone_number,
+    displayName: row.type === "individual" ? chatDisplayName(peer) : null,
+    phoneNumber: peer?.phoneNumber ?? null,
     groupSubject: row.group_subject,
     participants,
     archived: row.archived !== 0,
@@ -106,122 +216,124 @@ function chatFromRow(row: ChatRow, participants: GroupParticipant[], messages: M
   };
 }
 
-function participantsOf(db: AccountDb, jid: string): GroupParticipant[] {
-  // Canonicalize each participant's jid through the alias table at read time:
-  // rows are stored under whatever address space group metadata delivered
-  // (usually @lid), but consumers reason in phone jids — and a participant
-  // that still reads as @lid signals its lid↔pn pairing is unknown (the
-  // store's cue to refresh group metadata). Dedupe in case the same member
-  // was recorded under both addresses across syncs.
-  const rows = db.sql
+// ── row resolution ───────────────────────────────────────────────────────────
+
+/**
+ * jid → chat row. Group jids match `chats.jid` directly; any jid of an
+ * individual peer reaches the same chat through its account.
+ */
+function resolveChatRow(db: AccountDb, jid: string): ChatRow | null {
+  return db.sql
     .prepare(
-      `SELECT COALESCE(a.chat_jid, p.jid) AS jid, p.display_name, p.is_admin
-       FROM participants p LEFT JOIN aliases a ON a.alias_jid = p.jid
-       WHERE p.chat_jid = ? ORDER BY p.rowid`,
+      `SELECT * FROM chats WHERE jid = ?1
+       UNION ALL
+       SELECT c.* FROM account_jids aj JOIN chats c ON c.peer_account_id = aj.account_id
+       WHERE aj.jid = ?1
+       LIMIT 1`,
     )
-    .all(jid) as { jid: string; display_name: string | null; is_admin: number | null }[];
-  const byJid = new Map<string, GroupParticipant>();
-  for (const r of rows) {
-    const existing = byJid.get(r.jid);
-    const p: GroupParticipant = { jid: r.jid, displayName: r.display_name ?? existing?.displayName ?? null };
-    const isAdmin = r.is_admin != null ? r.is_admin !== 0 : existing?.isAdmin;
-    if (isAdmin != null) p.isAdmin = isAdmin;
-    byJid.set(r.jid, p);
-  }
-  return [...byJid.values()];
+    .get(jid) as ChatRow | undefined ?? null;
 }
 
-function reactionsByMessage(db: AccountDb, jid: string): Map<string, { emoji: string; sender: string }[]> {
-  const rows = db.sql
-    .prepare("SELECT message_id, sender, emoji FROM reactions WHERE chat_jid = ? ORDER BY rowid")
-    .all(jid) as { message_id: string; sender: string; emoji: string }[];
-  const byId = new Map<string, { emoji: string; sender: string }[]>();
-  for (const r of rows) {
-    const list = byId.get(r.message_id) ?? [];
-    list.push({ emoji: r.emoji, sender: r.sender });
-    byId.set(r.message_id, list);
+function ensureChatRow(db: AccountDb, jid: string): ChatRow {
+  const existing = resolveChatRow(db, jid);
+  if (existing) return existing;
+  if (chatTypeOf(jid) === "group") {
+    db.sql.prepare("INSERT OR IGNORE INTO chats (jid, type) VALUES (?, 'group')").run(jid);
+  } else {
+    const accountId = ensureAccount(db, { jids: [jid] });
+    const account = accountById(db, accountId);
+    const chatJid = (account && preferredJid(account)) ?? jid;
+    db.sql
+      .prepare("INSERT OR IGNORE INTO chats (jid, type, peer_account_id) VALUES (?, 'individual', ?)")
+      .run(chatJid, accountId);
   }
-  return byId;
+  const row = resolveChatRow(db, jid);
+  if (!row) throw new Error(`failed to ensure chat row for ${jid}`);
+  return row;
 }
 
-function resolveAlias(db: AccountDb, jid: string): string {
-  const row = db.sql.prepare("SELECT chat_jid FROM aliases WHERE alias_jid = ?").get(jid) as
-    | { chat_jid: string }
-    | undefined;
-  return row?.chat_jid ?? jid;
+/** The chat row of an account's individual chat, if it exists. */
+function peerChatOf(db: AccountDb, accountId: number): { id: number; jid: string } | null {
+  return db.sql.prepare("SELECT id, jid FROM chats WHERE peer_account_id = ?").get(accountId) as
+    | { id: number; jid: string }
+    | null
+    ?? null;
 }
 
 /** Chat meta + participants, without messages. */
-function chatShell(db: AccountDb, jid: string): Chat | null {
-  const row = db.sql.prepare("SELECT * FROM chats WHERE jid = ?").get(jid) as ChatRow | undefined;
-  if (!row) return null;
-  return chatFromRow(row, participantsOf(db, jid), []);
+function chatShell(ctx: LoadCtx, row: ChatRow): Chat {
+  return chatFromRow(ctx, row, participantsOf(ctx, row.id), []);
 }
 
-function loadMessages(db: AccountDb, jid: string, isGroup = false): Message[] {
-  const rows = db.sql
-    .prepare("SELECT * FROM messages WHERE chat_jid = ? ORDER BY timestamp, id")
-    .all(jid) as unknown as MessageRow[];
-  const reactions = reactionsByMessage(db, jid);
+function loadMessages(ctx: LoadCtx, chatId: number, isGroup: boolean): Message[] {
+  const rows = ctx.db.sql
+    .prepare("SELECT * FROM messages WHERE chat_id = ? ORDER BY timestamp, id")
+    .all(chatId) as unknown as MessageRow[];
+  const reactions = reactionsByMessage(ctx, chatId);
+  return rows.map((r) => messageFromRow(ctx, r, isGroup, reactions.get(r.id)));
+}
 
-  // Per-load cache shared across group-sender and quoted-sender lookups so we
-  // do at most one DB lookup per distinct sender JID regardless of call site.
-  const senderCache = new Map<string, string>();
-  const ownJid = getActiveAccount();
+// ── write paths ──────────────────────────────────────────────────────────────
 
-  return rows.map((r) => {
-    const msg = messageFromRow(r, reactions.get(r.id));
+/**
+ * Resolve a message's sender to an account id. Outbound rows belong to the
+ * self account (the triple PK forbids NULL senders); unknown inbound senders
+ * use the 0 sentinel. Deliberately no name observation here — see the module
+ * doc on name policy.
+ */
+function senderAccountIdFor(db: AccountDb, m: Message): number {
+  if (m.direction === "outbound") return selfAccountId(db);
+  return m.senderJid ? ensureAccount(db, { jids: [m.senderJid] }) : UNKNOWN_ACCOUNT_ID;
+}
 
-    // Resolve group inbound sender → contact name / "pushName (phone)" / phone.
-    if (isGroup && msg.direction === "inbound" && msg.senderJid) {
-      msg.senderName = resolveSenderLabel(msg.senderJid, msg.senderName, db, senderCache, ownJid);
+function quotedToJson(db: AccountDb, quoted: QuotedRef | null): string | null {
+  if (!quoted) return null;
+  const senderAccountId =
+    quoted.senderAccountId ??
+    (quoted.sender?.includes("@") ? ensureAccount(db, { jids: [quoted.sender] }) : null);
+  const persisted: PersistedQuoted = {
+    messageId: quoted.messageId,
+    senderAccountId,
+    snippet: quoted.snippet,
+  };
+  return toJson(persisted);
+}
+
+function getMessageRow(db: AccountDb, chatId: number, id: string): MessageRow | undefined {
+  return db.sql
+    .prepare("SELECT * FROM messages WHERE chat_id = ? AND id = ? LIMIT 1")
+    .get(chatId, id) as MessageRow | undefined;
+}
+
+function upsertMessageRow(db: AccountDb, chatId: number, m: Message): void {
+  let sender = senderAccountIdFor(db, m);
+  const existing = getMessageRow(db, chatId, m.id);
+  if (existing && existing.sender_account_id !== sender) {
+    if (sender === UNKNOWN_ACCOUNT_ID) {
+      // Don't fork a sentinel row next to the known one — write onto it.
+      sender = existing.sender_account_id;
+    } else if (existing.sender_account_id === UNKNOWN_ACCOUNT_ID) {
+      // A tombstone (or other unknown-sender row) learns its real sender.
+      db.sql
+        .prepare(
+          "UPDATE OR REPLACE messages SET sender_account_id = ? WHERE chat_id = ? AND id = ? AND sender_account_id = ?",
+        )
+        .run(sender, chatId, m.id, UNKNOWN_ACCOUNT_ID);
     }
-
-    // Resolve the quoted message's sender label for all chat types.
-    // QuotedRef.sender holds a raw JID (or a legacy display string for rows
-    // written before this change — see plan §1). Treat the value as a JID if
-    // it contains "@", otherwise leave it untouched as a legacy label.
-    if (msg.quoted?.sender) {
-      const rawSender = msg.quoted.sender;
-      if (rawSender.includes("@")) {
-        msg.quoted = {
-          ...msg.quoted,
-          sender: resolveSenderLabel(rawSender, null, db, senderCache, ownJid),
-        };
-      }
-    }
-
-    return msg;
-  });
-}
-
-function writeChatRow(db: AccountDb, chat: Chat): void {
-  db.sql
-    .prepare(
-      `INSERT OR REPLACE INTO chats (jid, type, display_name, phone_number, group_subject, archived, last_activity)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .run(chat.jid, chat.type, chat.displayName, chat.phoneNumber, chat.groupSubject, chat.archived, chat.lastActivity);
-  db.sql.prepare("DELETE FROM participants WHERE chat_jid = ?").run(chat.jid);
-  const insert = db.sql.prepare(
-    "INSERT INTO participants (chat_jid, jid, display_name, is_admin) VALUES (?, ?, ?, ?)",
-  );
-  for (const p of chat.participants) insert.run(chat.jid, p.jid, p.displayName, p.isAdmin ?? null);
-}
-
-function upsertMessageRow(db: AccountDb, chatJid: string, m: Message): void {
+    // Two distinct real senders sharing an id are genuinely different
+    // messages (ids are only unique per sender) — both rows are kept.
+  }
   db.sql
     .prepare(
       `INSERT OR REPLACE INTO messages
-       (chat_jid, id, sender_jid, sender_name, direction, timestamp, type, text,
+       (chat_id, id, sender_account_id, direction, timestamp, type, text,
         delivery_status, deleted_at, edited, media, quoted, raw)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
-      chatJid,
+      chatId,
       m.id,
-      m.senderJid,
-      m.senderName,
+      sender,
       m.direction,
       m.timestamp,
       m.type,
@@ -230,32 +342,53 @@ function upsertMessageRow(db: AccountDb, chatJid: string, m: Message): void {
       m.deletedAt ?? (m.deleted ? m.timestamp : null),
       m.edited ?? false,
       toJson(m.media),
-      toJson(m.quoted),
+      quotedToJson(db, m.quoted),
       toJson(m.raw),
     );
-  db.sql.prepare("DELETE FROM reactions WHERE chat_jid = ? AND message_id = ?").run(chatJid, m.id);
+  db.sql.prepare("DELETE FROM reactions WHERE chat_id = ? AND message_id = ?").run(chatId, m.id);
   if (m.reactions) {
     const insert = db.sql.prepare(
-      "INSERT OR REPLACE INTO reactions (chat_jid, message_id, sender, emoji) VALUES (?, ?, ?, ?)",
+      "INSERT OR REPLACE INTO reactions (chat_id, message_id, sender_account_id, emoji) VALUES (?, ?, ?, ?)",
     );
-    for (const r of m.reactions) insert.run(chatJid, m.id, r.sender, r.emoji);
+    for (const r of m.reactions) {
+      const reactor = r.sender.includes("@") ? ensureAccount(db, { jids: [r.sender] }) : UNKNOWN_ACCOUNT_ID;
+      insert.run(chatId, m.id, reactor, r.emoji);
+    }
   }
 }
 
+/** Persist chat-level state and membership. Name fields on the aggregate are ignored by design. */
+function writeChatRow(db: AccountDb, chat: Chat): number {
+  const row = ensureChatRow(db, chat.jid);
+  db.sql
+    .prepare("UPDATE chats SET group_subject = ?, archived = ?, last_activity = ? WHERE id = ?")
+    .run(chat.groupSubject, chat.archived, chat.lastActivity, row.id);
+  db.sql.prepare("DELETE FROM participants WHERE chat_id = ?").run(row.id);
+  const insert = db.sql.prepare(
+    "INSERT OR REPLACE INTO participants (chat_id, account_id, is_admin) VALUES (?, ?, ?)",
+  );
+  for (const p of chat.participants) {
+    const accountId = ensureAccount(db, { jids: [p.jid] });
+    if (accountId !== UNKNOWN_ACCOUNT_ID) insert.run(row.id, accountId, p.isAdmin ?? null);
+  }
+  return row.id;
+}
+
 function loadChatFrom(db: AccountDb, jid: string): Chat | null {
-  const canonical = resolveAlias(db, jid);
-  const shell = chatShell(db, canonical);
-  if (!shell) return null;
-  shell.messages = loadMessages(db, canonical, shell.type === "group");
+  const row = resolveChatRow(db, jid);
+  if (!row) return null;
+  const ctx = makeCtx(db);
+  const shell = chatShell(ctx, row);
+  shell.messages = loadMessages(ctx, row.id, shell.type === "group");
   return shell;
 }
 
 function saveChatTo(db: AccountDb, chat: Chat): void {
   db.transaction(() => {
-    writeChatRow(db, chat);
-    db.sql.prepare("DELETE FROM reactions WHERE chat_jid = ?").run(chat.jid);
-    db.sql.prepare("DELETE FROM messages WHERE chat_jid = ?").run(chat.jid);
-    for (const m of chat.messages) upsertMessageRow(db, chat.jid, m);
+    const chatId = writeChatRow(db, chat);
+    db.sql.prepare("DELETE FROM reactions WHERE chat_id = ?").run(chatId);
+    db.sql.prepare("DELETE FROM messages WHERE chat_id = ?").run(chatId);
+    for (const m of chat.messages) upsertMessageRow(db, chatId, m);
   });
 }
 
@@ -279,12 +412,13 @@ export async function listChatJids(): Promise<string[]> {
 export async function loadAllChats(): Promise<Chat[]> {
   const db = await getActiveDb();
   const chatRows = db.sql.prepare("SELECT * FROM chats").all() as unknown as ChatRow[];
-  const chats: Chat[] = [];
-  for (const row of chatRows) {
-    const chat = loadChatFrom(db, row.jid);
-    if (chat) chats.push(chat);
-  }
-  return chats;
+  // One context for the whole listing — accounts repeat heavily across chats.
+  const ctx = makeCtx(db);
+  return chatRows.map((row) => {
+    const shell = chatShell(ctx, row);
+    shell.messages = loadMessages(ctx, row.id, shell.type === "group");
+    return shell;
+  });
 }
 
 // ── targeted tier: chatOps ──────────────────────────────────────────────────
@@ -295,31 +429,32 @@ export interface FoundMessage {
 }
 
 export interface ChatOps {
-  /** Resolve a jid through the alias table (lid → canonical phone jid). */
-  getCanonicalJid(jid: string): Promise<string>;
+  /** Resolve a jid to its chat's preferred jid (lid → phone jid once the pairing is known). */
+  resolveChatJid(jid: string): Promise<string>;
   /**
-   * Register `aliasJid` as an alternate identity of `chatJid` and fold any
-   * chat rows accumulated under the alias into the canonical record. First
-   * write wins — an alias is never silently re-pointed. Returns true only
-   * when the alias was newly registered.
+   * Register that `lidJid` and `phoneJid` are the same person. Merges their
+   * account rows (and any duplicate individual chats) when they were known
+   * separately, and re-keys the chat to the phone jid. Returns the jids of
+   * chats whose identity changed (for UI reloads) — empty when the pairing
+   * was already known.
    */
-  addAlias(aliasJid: string, chatJid: string): Promise<boolean>;
+  registerJidPair(lidJid: string, phoneJid: string): Promise<string[]>;
   /**
-   * Reconcile-merge incoming meta + messages into the chat, touching only the
-   * affected message rows. `fillDisplayNameIfMissing` mirrors the verified-biz
-   * name rule: applied only when neither the stored chat nor the incoming
-   * meta carries a name.
+   * Land name/identity sightings on account rows (the only write path for
+   * names). Returns the jids of existing individual chats whose peer account
+   * actually changed — callers emit chat-updated for those.
    */
-  upsertChatMessages(
-    jid: string,
-    meta: Partial<Chat>,
-    incoming: Message[],
-    fillDisplayNameIfMissing?: string | null,
-  ): Promise<void>;
+  observeAccounts(observations: AccountObservation[]): Promise<string[]>;
+  /** Reconcile-merge incoming meta + messages into the chat, touching only the affected message rows. */
+  upsertChatMessages(jid: string, meta: Partial<Chat>, incoming: Message[]): Promise<void>;
   /** Merge chat metadata only. Returns false when the chat doesn't exist and `createIfMissing` is off. */
   mergeChatMeta(jid: string, meta: Partial<Chat>, createIfMissing: boolean): Promise<boolean>;
   applyDeliveryReceipt(jid: string, messageId: string, status: DeliveryStatus): Promise<boolean>;
-  applyReaction(jid: string, targetMessageId: string, reaction: { emoji: string; sender: string }): Promise<boolean>;
+  applyReaction(
+    jid: string,
+    targetMessageId: string,
+    reaction: { emoji: string; senderJid: string },
+  ): Promise<boolean>;
   applyMessageEdit(jid: string, messageId: string, text: string): Promise<boolean>;
   /** Mark deleted in place, or create a tombstone (and the chat) when unknown. */
   applyMessageDeletion(jid: string, messageId: string, deletedAt: number): Promise<boolean>;
@@ -328,107 +463,109 @@ export interface ChatOps {
   getMessage(jid: string, messageId: string): Promise<Message | null>;
   /** Indexed cross-chat lookup by message id (replaces the all-chats scan). */
   findMessageById(messageId: string): Promise<FoundMessage | null>;
-  /**
-   * For each jid in `names`, update every matching row in the participants
-   * table with the given display name (only when the row currently has no name).
-   * Used to backfill group participant display names from contacts.upsert.
-   */
-  updateParticipantNames(names: Map<string, string>): Promise<void>;
-}
-
-function getMessageRow(db: AccountDb, chatJid: string, id: string): MessageRow | undefined {
-  return db.sql.prepare("SELECT * FROM messages WHERE chat_jid = ? AND id = ?").get(chatJid, id) as
-    | MessageRow
-    | undefined;
-}
-
-function ensureChatRow(db: AccountDb, jid: string): void {
-  db.sql.prepare("INSERT OR IGNORE INTO chats (jid, type) VALUES (?, ?)").run(jid, chatTypeOf(jid));
 }
 
 export const chatOps: ChatOps = {
-  async getCanonicalJid(jid) {
-    return resolveAlias(await getActiveDb(), jid);
+  async resolveChatJid(jid) {
+    const db = await getActiveDb();
+    const row = resolveChatRow(db, jid);
+    if (row) return row.jid;
+    const account = accountByJid(db, jid);
+    return (account && preferredJid(account)) ?? jid;
   },
 
-  async addAlias(aliasJid, chatJid) {
-    if (aliasJid === chatJid) return false;
+  async registerJidPair(lidJid, phoneJid) {
+    if (lidJid === phoneJid) return [];
     const db = await getActiveDb();
     return db.transaction(() => {
-      const existing = db.sql.prepare("SELECT chat_jid FROM aliases WHERE alias_jid = ?").get(aliasJid) as
-        | { chat_jid: string }
-        | undefined;
-      if (existing) return false;
-      db.sql.prepare("INSERT INTO aliases (alias_jid, chat_jid) VALUES (?, ?)").run(aliasJid, chatJid);
+      const known = accountByJid(db, lidJid);
+      if (known && known.jids.includes(phoneJid)) return [];
 
-      const strayShell = chatShell(db, aliasJid);
-      if (!strayShell) return true;
-      const strayMessages = loadMessages(db, aliasJid);
+      // Capture the chats reachable under either address before the merge —
+      // a fold can orphan a lid-keyed list entry the UI must reload to drop.
+      const affected = new Set<string>();
+      for (const jid of [lidJid, phoneJid]) {
+        const row = resolveChatRow(db, jid);
+        if (row) affected.add(row.jid);
+      }
 
-      const targetShell = chatShell(db, chatJid);
-      const targetChat = targetShell ? { ...targetShell, messages: loadMessages(db, chatJid) } : null;
-
-      // Canonical chat's fields win; the stray only fills gaps.
-      const meta: Partial<Chat> = {
-        jid: chatJid,
-        type: chatTypeOf(chatJid),
-        displayName: targetChat?.displayName ?? strayShell.displayName ?? undefined,
-        phoneNumber: targetChat?.phoneNumber ?? strayShell.phoneNumber ?? undefined,
-        groupSubject: targetChat?.groupSubject ?? strayShell.groupSubject ?? undefined,
-        archived: (targetChat?.archived ?? false) || strayShell.archived,
-        lastActivity: Math.max(targetChat?.lastActivity ?? 0, strayShell.lastActivity),
-        participants: strayShell.participants.length > 0 ? strayShell.participants : undefined,
-      };
-      const merged = upsertChat(targetChat, meta, strayMessages);
-      saveChatTo(db, merged);
-
-      db.sql.prepare("DELETE FROM reactions WHERE chat_jid = ?").run(aliasJid);
-      db.sql.prepare("DELETE FROM messages WHERE chat_jid = ?").run(aliasJid);
-      db.sql.prepare("DELETE FROM participants WHERE chat_jid = ?").run(aliasJid);
-      db.sql.prepare("DELETE FROM chats WHERE jid = ?").run(aliasJid);
-      getLogger().info(
-        { aliasJid, chatJid, mergedMessages: strayMessages.length },
-        "merged alias-keyed chat into canonical",
-      );
-      return true;
+      // ensureAccount merges the two accounts when they were known separately
+      // and re-keys the surviving peer chat to the phone jid.
+      const accountId = ensureAccount(db, { jids: [lidJid, phoneJid] });
+      const chat = peerChatOf(db, accountId);
+      if (chat) affected.add(chat.jid);
+      return [...affected];
     });
   },
 
-  async upsertChatMessages(jid, meta, incoming, fillDisplayNameIfMissing) {
+  async observeAccounts(observations) {
+    const db = await getActiveDb();
+    return db.transaction(() => {
+      const affected = new Set<string>();
+      for (const obs of observations) {
+        const jids = obs.jids.filter((j): j is string => Boolean(j));
+        if (jids.length === 0) continue;
+        // Chats reachable before the observation: a merge/re-key can orphan a
+        // lid-keyed list entry the UI must reload to drop.
+        const beforeChats = new Set<string>();
+        for (const jid of jids) {
+          const row = resolveChatRow(db, jid);
+          if (row) beforeChats.add(row.jid);
+        }
+        const before = accountByJid(db, jids[0]!);
+        const accountId = ensureAccount(db, obs);
+        if (accountId === UNKNOWN_ACCOUNT_ID) continue;
+        const after = accountById(db, accountId);
+        const changed =
+          !before ||
+          before.id !== accountId ||
+          before.pushName !== after?.pushName ||
+          before.contactName !== after?.contactName ||
+          before.verifiedName !== after?.verifiedName ||
+          before.phoneNumber !== after?.phoneNumber ||
+          before.jids.length !== after?.jids.length;
+        if (!changed) continue;
+        for (const jid of beforeChats) affected.add(jid);
+        const chat = peerChatOf(db, accountId);
+        if (chat) affected.add(chat.jid);
+      }
+      return [...affected];
+    });
+  },
+
+  async upsertChatMessages(jid, meta, incoming) {
     const db = await getActiveDb();
     db.transaction(() => {
-      const canonical = resolveAlias(db, jid);
-      const shell = chatShell(db, canonical);
-
-      const metaX: Partial<Chat> = { ...meta, jid: canonical };
-      if (fillDisplayNameIfMissing != null && shell?.displayName == null && metaX.displayName == null) {
-        metaX.displayName = fillDisplayNameIfMissing;
-      }
+      const row = resolveChatRow(db, jid);
+      const ctx = makeCtx(db);
+      const shell = row ? chatShell(ctx, row) : null;
+      const metaX: Partial<Chat> = { ...meta, jid: row?.jid ?? jid };
 
       const existing: Message[] = [];
-      if (shell && incoming.length > 0) {
-        const reactions = reactionsByMessage(db, canonical);
+      if (row && incoming.length > 0) {
+        const reactions = reactionsByMessage(ctx, row.id);
+        const isGroup = row.type === "group";
         for (const m of incoming) {
-          const row = getMessageRow(db, canonical, m.id);
-          if (row) existing.push(messageFromRow(row, reactions.get(row.id)));
+          const stored = getMessageRow(db, row.id, m.id);
+          if (stored) existing.push(messageFromRow(ctx, stored, isGroup, reactions.get(stored.id)));
         }
       }
 
       const base = shell ? { ...shell, messages: existing } : null;
       const next = upsertChat(base, metaX, incoming);
 
-      writeChatRow(db, next);
-      for (const m of next.messages) upsertMessageRow(db, canonical, m);
+      const chatId = writeChatRow(db, next);
+      for (const m of next.messages) upsertMessageRow(db, chatId, m);
     });
   },
 
   async mergeChatMeta(jid, meta, createIfMissing) {
     const db = await getActiveDb();
     return db.transaction(() => {
-      const canonical = resolveAlias(db, jid);
-      const shell = chatShell(db, canonical);
-      if (!shell && !createIfMissing) return false;
-      const next = mergeChatMeta(shell, { ...meta, jid: canonical });
+      const row = resolveChatRow(db, jid);
+      if (!row && !createIfMissing) return false;
+      const shell = row ? chatShell(makeCtx(db), row) : null;
+      const next = mergeChatMeta(shell, { ...meta, jid: row?.jid ?? jid });
       writeChatRow(db, next);
       return true;
     });
@@ -436,29 +573,35 @@ export const chatOps: ChatOps = {
 
   async applyDeliveryReceipt(jid, messageId, status) {
     const db = await getActiveDb();
-    const canonical = resolveAlias(db, jid);
-    const row = getMessageRow(db, canonical, messageId);
-    if (!row || row.direction !== "outbound") return false;
-    const next = advanceDeliveryStatus(row.delivery_status as DeliveryStatus | null, status);
-    if (next === row.delivery_status) return false;
+    const row = resolveChatRow(db, jid);
+    if (!row) return false;
+    // Receipts only ever apply to our own messages; the direction filter also
+    // disambiguates the realistic (chat, id) collision under the triple PK.
+    const msg = db.sql
+      .prepare("SELECT delivery_status FROM messages WHERE chat_id = ? AND id = ? AND direction = 'outbound' LIMIT 1")
+      .get(row.id, messageId) as { delivery_status: string | null } | undefined;
+    if (!msg) return false;
+    const next = advanceDeliveryStatus(msg.delivery_status as DeliveryStatus | null, status);
+    if (next === msg.delivery_status) return false;
     db.sql
-      .prepare("UPDATE messages SET delivery_status = ? WHERE chat_jid = ? AND id = ?")
-      .run(next, canonical, messageId);
+      .prepare("UPDATE messages SET delivery_status = ? WHERE chat_id = ? AND id = ? AND direction = 'outbound'")
+      .run(next, row.id, messageId);
     return true;
   },
 
   async applyReaction(jid, targetMessageId, reaction) {
     const db = await getActiveDb();
     return db.transaction(() => {
-      const canonical = resolveAlias(db, jid);
-      if (!getMessageRow(db, canonical, targetMessageId)) return false;
+      const row = resolveChatRow(db, jid);
+      if (!row || !getMessageRow(db, row.id, targetMessageId)) return false;
+      const reactor = ensureAccount(db, { jids: [reaction.senderJid] });
       db.sql
-        .prepare("DELETE FROM reactions WHERE chat_jid = ? AND message_id = ? AND sender = ?")
-        .run(canonical, targetMessageId, reaction.sender);
+        .prepare("DELETE FROM reactions WHERE chat_id = ? AND message_id = ? AND sender_account_id = ?")
+        .run(row.id, targetMessageId, reactor);
       if (reaction.emoji) {
         db.sql
-          .prepare("INSERT INTO reactions (chat_jid, message_id, sender, emoji) VALUES (?, ?, ?, ?)")
-          .run(canonical, targetMessageId, reaction.sender, reaction.emoji);
+          .prepare("INSERT INTO reactions (chat_id, message_id, sender_account_id, emoji) VALUES (?, ?, ?, ?)")
+          .run(row.id, targetMessageId, reactor, reaction.emoji);
       }
       return true;
     });
@@ -466,68 +609,67 @@ export const chatOps: ChatOps = {
 
   async applyMessageEdit(jid, messageId, text) {
     const db = await getActiveDb();
-    const canonical = resolveAlias(db, jid);
-    const row = getMessageRow(db, canonical, messageId);
+    const row = resolveChatRow(db, jid);
     if (!row) return false;
-    if (row.edited && row.text === text) return false;
+    const stored = getMessageRow(db, row.id, messageId);
+    if (!stored) return false;
+    if (stored.edited && stored.text === text) return false;
     db.sql
-      .prepare("UPDATE messages SET text = ?, edited = 1 WHERE chat_jid = ? AND id = ?")
-      .run(text, canonical, messageId);
+      .prepare("UPDATE messages SET text = ?, edited = 1 WHERE chat_id = ? AND id = ?")
+      .run(text, row.id, messageId);
     return true;
   },
 
   async applyMessageDeletion(jid, messageId, deletedAt) {
     const db = await getActiveDb();
     return db.transaction(() => {
-      const canonical = resolveAlias(db, jid);
-      ensureChatRow(db, canonical);
-      const row = getMessageRow(db, canonical, messageId);
-      if (!row) {
-        upsertMessageRow(db, canonical, tombstone(messageId, deletedAt));
+      const row = ensureChatRow(db, jid);
+      const stored = getMessageRow(db, row.id, messageId);
+      if (!stored) {
+        upsertMessageRow(db, row.id, tombstone(messageId, deletedAt));
         return true;
       }
-      if (row.deleted_at != null) return false;
+      if (stored.deleted_at != null) return false;
       db.sql
-        .prepare("UPDATE messages SET deleted_at = ? WHERE chat_jid = ? AND id = ?")
-        .run(deletedAt, canonical, messageId);
+        .prepare("UPDATE messages SET deleted_at = ? WHERE chat_id = ? AND id = ?")
+        .run(deletedAt, row.id, messageId);
       return true;
     });
   },
 
   async setMessageMedia(jid, messageId, media) {
     const db = await getActiveDb();
-    const canonical = resolveAlias(db, jid);
-    const row = getMessageRow(db, canonical, messageId);
-    if (!row || row.media != null) return false;
+    const row = resolveChatRow(db, jid);
+    if (!row) return false;
+    const stored = getMessageRow(db, row.id, messageId);
+    if (!stored || stored.media != null) return false;
     db.sql
-      .prepare("UPDATE messages SET media = ? WHERE chat_jid = ? AND id = ?")
-      .run(toJson(media), canonical, messageId);
+      .prepare("UPDATE messages SET media = ? WHERE chat_id = ? AND id = ? AND media IS NULL")
+      .run(toJson(media), row.id, messageId);
     return true;
   },
 
   async getMessage(jid, messageId) {
     const db = await getActiveDb();
-    const canonical = resolveAlias(db, jid);
-    const row = getMessageRow(db, canonical, messageId);
-    return row ? messageFromRow(row) : null;
+    const row = resolveChatRow(db, jid);
+    if (!row) return null;
+    const stored = getMessageRow(db, row.id, messageId);
+    return stored ? messageFromRow(makeCtx(db), stored, row.type === "group") : null;
   },
 
   async findMessageById(messageId) {
     const db = await getActiveDb();
-    const row = db.sql.prepare("SELECT * FROM messages WHERE id = ? LIMIT 1").get(messageId) as
-      | MessageRow
-      | undefined;
-    return row ? { chatJid: row.chat_jid, message: messageFromRow(row) } : null;
-  },
-
-  async updateParticipantNames(names) {
-    if (names.size === 0) return;
-    const db = await getActiveDb();
-    const stmt = db.sql.prepare(
-      "UPDATE participants SET display_name = ? WHERE jid = ? AND display_name IS NULL",
-    );
-    for (const [jid, displayName] of names) {
-      stmt.run(displayName, jid);
-    }
+    const stored = db.sql
+      .prepare(
+        `SELECT m.*, c.jid AS chat_jid, c.type AS chat_type
+         FROM messages m JOIN chats c ON c.id = m.chat_id
+         WHERE m.id = ? LIMIT 1`,
+      )
+      .get(messageId) as (MessageRow & { chat_jid: string; chat_type: string }) | undefined;
+    if (!stored) return null;
+    return {
+      chatJid: stored.chat_jid,
+      message: messageFromRow(makeCtx(db), stored, stored.chat_type === "group"),
+    };
   },
 };

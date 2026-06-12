@@ -244,31 +244,6 @@ export function phoneNumberFromJid(jid: string): string | null {
   return `+${decoded.user}`;
 }
 
-/** WhatsApp's official service account (`0@s.whatsapp.net`) — announcements,
- * the Business welcome message, etc. It has no contact record; WA Web
- * hardcodes its name the same way. */
-const WHATSAPP_SERVICE_JID = "0@s.whatsapp.net";
-
-/**
- * Recover the peer's phone number from message keys of an individual chat.
- * A chat keyed by `@lid` exposes no number itself, but message keys carry
- * `remoteJidAlt` — the chat's address in the other address space, i.e. the
- * peer's real phone jid when the chat is keyed by `@lid`. Inbound messages
- * additionally qualify via the legacy `senderPn` field (pre-v7 raw data).
- */
-export function phoneNumberFromMessages(waMessages: WAMessage[]): string | null {
-  for (const waMsg of waMessages) {
-    const legacySenderPn = waMsg.key.fromMe
-      ? null
-      : (waMsg.key as { senderPn?: string }).senderPn;
-    const altJid = waMsg.key.remoteJidAlt ?? legacySenderPn;
-    if (!altJid) continue;
-    const phoneNumber = phoneNumberFromJid(jidNormalizedUser(altJid));
-    if (phoneNumber) return phoneNumber;
-  }
-  return null;
-}
-
 /**
  * Recover a business account's display name from its message stanzas. Unlike
  * push names, `verifiedBizName` is verified by WhatsApp (it's what the phone
@@ -284,54 +259,22 @@ export function verifiedBizNameFromMessages(waMessages: WAMessage[]): string | n
 }
 
 /**
- * Name + phone number a contact contributes to its chat. Only trustworthy
- * names qualify: `name` is the user's own saved address-book entry and
- * `verifiedName` covers business accounts (e.g. "WhatsApp Business") verified
- * by WhatsApp. `notify` — the peer's self-chosen push name — is deliberately
- * excluded: a non-contact must render as "Not Contact", never as whatever
- * they typed into their profile. The number is taken from the contact's
- * paired phone jid — a chat keyed by an opaque `@lid` address has no number
- * of its own.
+ * Map a Baileys chat (history sync / upsert / update) into a partial domain
+ * `Chat`. Names and phone numbers deliberately don't appear here — they live
+ * on the peer's accounts row (written via `chatOps.observeAccounts`) and are
+ * derived at load time; a chat row carries pure conversation state only.
  */
-export function mapContact(contact: Contact | undefined): Partial<Chat> {
-  if (!contact) return {};
-  const partial: Partial<Chat> = {};
-  const displayName = contact.name ?? contact.verifiedName ?? null;
-  if (displayName != null) partial.displayName = displayName;
-  const phoneNumber = contact.phoneNumber
-    ? phoneNumberFromJid(jidNormalizedUser(contact.phoneNumber))
-    : null;
-  if (phoneNumber != null) partial.phoneNumber = phoneNumber;
-  return partial;
-}
-
-/** Map a Baileys chat (history sync / upsert / update) into a partial domain `Chat`. */
-export function mapChat(waChat: Partial<BaileysChat>, contacts: Map<string, Contact>): Partial<Chat> {
+export function mapChat(waChat: Partial<BaileysChat>): Partial<Chat> {
   const rawJid = waChat.id;
   if (!rawJid) return {};
   const jid = jidNormalizedUser(rawJid);
   const type: ChatType = isGroupJid(jid) ? "group" : "individual";
-  const contactMeta = mapContact(contacts.get(jid));
 
   const partial: Partial<Chat> = { jid, type };
 
-  // For individual chats `waChat.name` is the peer's push name whenever they
-  // aren't a saved contact, so only contact-derived names (saved/verified)
-  // count; groups have no such ambiguity — their name is the subject.
-  const displayName =
-    type === "group"
-      ? (waChat.name ?? null)
-      : jid === WHATSAPP_SERVICE_JID
-        ? "WhatsApp"
-        : (contactMeta.displayName ?? null);
-  if (displayName != null) partial.displayName = displayName;
-
-  // Prefer a real number off the chat jid itself (when it's a phone address),
-  // otherwise the contact's paired phone number; a bare `@lid` chat has neither
-  // until a contact pairs it.
-  const phoneNumber = phoneNumberFromJid(jid) ?? contactMeta.phoneNumber ?? null;
-  if (phoneNumber != null) partial.phoneNumber = phoneNumber;
-
+  // Groups title by their subject (`waChat.name`); for individual chats
+  // `waChat.name` is the peer's push name whenever they aren't a saved
+  // contact, so it never lands anywhere from here.
   if (type === "group") partial.groupSubject = waChat.name ?? null;
   if (waChat.archived != null) partial.archived = waChat.archived;
 
@@ -383,7 +326,6 @@ export function mapGroupMetadata(meta: GroupMetadata): Partial<Chat> {
   return {
     jid,
     type: "group",
-    displayName: meta.subject,
     groupSubject: meta.subject,
     participants: mapGroupParticipants(meta.participants),
   };

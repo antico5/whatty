@@ -1,45 +1,67 @@
 import fs from "node:fs";
 import path from "node:path";
 import { getLogger } from "../logger.js";
-import { accountDbFile, getActiveAccount } from "./paths.js";
+import { accountDbFile, dataDir, getActiveAccount } from "./paths.js";
 import { openSqlite, type SqlDatabase } from "./sqlite.js";
 
 /**
- * Per-account SQLite database (`accounts/<id>/chats.db`): chats, messages,
- * reactions, participants, lid/phone aliases, the Baileys auth store and a
- * capped ring buffer of raw connection events for debugging.
+ * Per-account SQLite database (`accounts/<id>/chats.db`): people (accounts +
+ * their jids), chats, participants, messages, reactions, the Baileys auth
+ * store and a capped ring buffer of raw connection events for debugging.
+ *
+ * Identity model: an `accounts` row is a person/business; `account_jids` maps
+ * every address they're known by (`@s.whatsapp.net`, `@lid`) onto that row.
+ * Everything else references accounts by surrogate id, so a lid-addressed and
+ * a phone-addressed sighting of the same person can never split into two
+ * identities or two individual chats.
  *
  * Media blobs and the rotating log file deliberately stay on the filesystem.
  */
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 const SCHEMA: string[] = [
-  `CREATE TABLE IF NOT EXISTS chats (
-    jid TEXT PRIMARY KEY,
-    type TEXT NOT NULL,
-    display_name TEXT,
+  `CREATE TABLE IF NOT EXISTS accounts (
+    id INTEGER PRIMARY KEY,
     phone_number TEXT,
+    push_name TEXT,
+    contact_name TEXT,
+    verified_name TEXT
+  )`,
+  // Sentinel for messages whose sender is unknown (tombstones, malformed
+  // keys). Never merged, never displayed; rowid allocation continues at 1.
+  `INSERT OR IGNORE INTO accounts (id) VALUES (0)`,
+  `CREATE TABLE IF NOT EXISTS account_jids (
+    jid TEXT PRIMARY KEY,
+    account_id INTEGER NOT NULL REFERENCES accounts(id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_account_jids_account ON account_jids(account_id)`,
+  `CREATE TABLE IF NOT EXISTS chats (
+    id INTEGER PRIMARY KEY,
+    jid TEXT NOT NULL UNIQUE,
+    type TEXT NOT NULL,
+    peer_account_id INTEGER REFERENCES accounts(id),
     group_subject TEXT,
     archived INTEGER NOT NULL DEFAULT 0,
     last_activity INTEGER NOT NULL DEFAULT 0
   )`,
-  `CREATE TABLE IF NOT EXISTS aliases (
-    alias_jid TEXT PRIMARY KEY,
-    chat_jid TEXT NOT NULL
-  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_chats_peer
+     ON chats(peer_account_id) WHERE peer_account_id IS NOT NULL`,
   `CREATE TABLE IF NOT EXISTS participants (
-    chat_jid TEXT NOT NULL,
-    jid TEXT NOT NULL,
-    display_name TEXT,
+    chat_id INTEGER NOT NULL REFERENCES chats(id),
+    account_id INTEGER NOT NULL REFERENCES accounts(id),
     is_admin INTEGER,
-    PRIMARY KEY (chat_jid, jid)
+    PRIMARY KEY (chat_id, account_id)
   )`,
+  // WhatsApp message ids are only unique per sender, hence the triple PK.
+  // sender_account_id is NOT NULL on purpose: composite PKs on rowid tables
+  // admit NULLs and treat them as distinct, which would silently break
+  // outbound-row uniqueness — outbound rows use the self account, unknown
+  // senders the 0 sentinel.
   `CREATE TABLE IF NOT EXISTS messages (
-    chat_jid TEXT NOT NULL,
+    chat_id INTEGER NOT NULL,
     id TEXT NOT NULL,
-    sender_jid TEXT,
-    sender_name TEXT,
+    sender_account_id INTEGER NOT NULL,
     direction TEXT NOT NULL,
     timestamp INTEGER NOT NULL,
     type TEXT NOT NULL,
@@ -50,16 +72,16 @@ const SCHEMA: string[] = [
     media TEXT,
     quoted TEXT,
     raw TEXT,
-    PRIMARY KEY (chat_jid, id)
+    PRIMARY KEY (chat_id, id, sender_account_id)
   )`,
-  `CREATE INDEX IF NOT EXISTS idx_messages_chat_ts ON messages(chat_jid, timestamp)`,
+  `CREATE INDEX IF NOT EXISTS idx_messages_chat_ts ON messages(chat_id, timestamp)`,
   `CREATE INDEX IF NOT EXISTS idx_messages_id ON messages(id)`,
   `CREATE TABLE IF NOT EXISTS reactions (
-    chat_jid TEXT NOT NULL,
+    chat_id INTEGER NOT NULL,
     message_id TEXT NOT NULL,
-    sender TEXT NOT NULL,
+    sender_account_id INTEGER NOT NULL,
     emoji TEXT NOT NULL,
-    PRIMARY KEY (chat_jid, message_id, sender)
+    PRIMARY KEY (chat_id, message_id, sender_account_id)
   )`,
   `CREATE TABLE IF NOT EXISTS auth_kv (
     key TEXT PRIMARY KEY,
@@ -90,6 +112,14 @@ export interface AccountDb {
 function migrate(sql: SqlDatabase): void {
   const row = sql.prepare("PRAGMA user_version").get() as { user_version: number };
   if (row.user_version >= SCHEMA_VERSION) return;
+  // No migration path exists from older schemas, and we never delete chat
+  // data ourselves — the user must wipe the data dir and re-link the device.
+  if (row.user_version > 0) {
+    throw new Error(
+      `chats.db uses schema v${row.user_version}, but this build needs v${SCHEMA_VERSION} ` +
+        `and there is no migration — delete the data directory (${dataDir()}) and re-link your device`,
+    );
+  }
   for (const stmt of SCHEMA) sql.exec(stmt);
   sql.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
 }

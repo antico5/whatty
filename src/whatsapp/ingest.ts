@@ -12,6 +12,7 @@ import {
   type WAMessageUpdate,
 } from "baileys";
 import { chatOps, type ChatOps } from "../persistence/chatStore.js";
+import type { AccountObservation } from "../persistence/peerStore.js";
 import { chatTypeOf, type Chat, type DeliveryStatus, type MediaRef } from "../types/index.js";
 import { createSerialQueues } from "../util/serialQueues.js";
 import type { Connection, ConnectionStatus } from "./connection.js";
@@ -23,14 +24,11 @@ import {
   editedTextOf,
   groupParticipantAliases,
   mapChat,
-  mapContact,
   mapDeliveryStatus,
   mapGroupMetadata,
   mapGroupParticipants,
   mapWAMessage,
   MEDIA_CONTENT_KEYS,
-  phoneNumberFromJid,
-  phoneNumberFromMessages,
   timestampToMillis,
   verifiedBizNameFromMessages,
 } from "./mappers.js";
@@ -85,9 +83,13 @@ function groupMessagesByJid(messages: WAMessage[]): GroupedMessages {
     if (!m.key.remoteJid) continue;
     let jid = jidNormalizedUser(m.key.remoteJid);
     if (jid === STATUS_BROADCAST_JID) continue;
-    if (jid.endsWith("@lid") && m.key.remoteJidAlt) {
-      const alt = jidNormalizedUser(m.key.remoteJidAlt);
-      if (alt.endsWith("@s.whatsapp.net")) {
+    if (jid.endsWith("@lid")) {
+      // Inbound messages additionally qualify via the legacy `senderPn`
+      // field (pre-v7 raw data).
+      const legacySenderPn = m.key.fromMe ? undefined : (m.key as { senderPn?: string }).senderPn;
+      const rawAlt = m.key.remoteJidAlt ?? legacySenderPn;
+      const alt = rawAlt ? jidNormalizedUser(rawAlt) : null;
+      if (alt?.endsWith("@s.whatsapp.net")) {
         aliases.set(jid, alt);
         jid = alt;
       }
@@ -137,60 +139,23 @@ export function createIngestor(conn: Connection, deps: Partial<IngestorDeps> = {
   const log = getLogger().child({ module: "ingest" });
   const emitter = new EventEmitter() as Ingestor;
 
-  const contacts = new Map<string, Contact>();
   const queues = createSerialQueues();
   const pendingEncryptedEdits = new Map<string, WAMessage>();
   const requestedEditHistory = new Set<string>();
 
-  /**
-   * Field-merge two records for the same contact, with the incoming value
-   * winning only when present. History sync emits a bland chat-derived contact
-   * (`{ id, name: undefined }`) alongside the real address-book contact; a blind
-   * overwrite would let that empty record clobber a known name, so we merge
-   * instead and never let a nullish field erase an existing one.
-   */
-  function mergeContacts(a: Contact, b: Contact): Contact {
-    return {
-      ...a,
-      ...b,
-      id: b.id ?? a.id,
-      lid: b.lid ?? a.lid,
-      phoneNumber: b.phoneNumber ?? a.phoneNumber,
-      name: b.name ?? a.name,
-      notify: b.notify ?? a.notify,
-      verifiedName: b.verifiedName ?? a.verifiedName,
-      imgUrl: b.imgUrl ?? a.imgUrl,
-      status: b.status ?? a.status,
-    };
-  }
-
-  /**
-   * Index a contact under every identifier it carries — its `id`, its `@lid`
-   * (anonymous) address, and its `@s.whatsapp.net` (phone) address. WhatsApp now
-   * keys many chats by `@lid` while contacts may report the phone jid (or vice
-   * versa); indexing all of them lets `mapChat` resolve a name regardless of
-   * which address space the chat is keyed by. Merges into any existing record so
-   * a later, sparser sighting of the same contact never wipes a known name.
-   */
-  function indexContact(c: Contact): void {
-    for (const key of [c.id, c.lid, c.phoneNumber]) {
-      if (!key) continue;
-      const k = jidNormalizedUser(key);
-      const existing = contacts.get(k);
-      contacts.set(k, existing ? mergeContacts(existing, c) : c);
-    }
-  }
+  /** Reserved queue key for account-level writes — they're cross-chat, so they serialize together. */
+  const ACCOUNTS_QUEUE_KEY = "\0accounts";
 
   /**
    * Run a targeted store operation, serialized per-jid so concurrent events
    * can't interleave multi-step logical operations on the same chat. The task
-   * receives the canonical (alias-resolved) jid; a truthy result emits
-   * `chat-updated` for it.
+   * receives the chat's preferred jid; a truthy result emits `chat-updated`
+   * for it.
    */
   function mutate(jid: string, task: (canonicalJid: string) => Promise<boolean>): void {
     queues.enqueue(jid, async () => {
       try {
-        const canonical = await ops.getCanonicalJid(jid);
+        const canonical = await ops.resolveChatJid(jid);
         if (await task(canonical)) emitter.emit("chat-updated", canonical);
       } catch (err) {
         log.error({ err, jid }, "failed to persist chat update");
@@ -202,15 +167,55 @@ export function createIngestor(conn: Connection, deps: Partial<IngestorDeps> = {
     mutate(jid, (cjid) => ops.applyMessageDeletion(cjid, targetId, deletedAt));
   }
 
-  function registerAliases(aliases: Map<string, string>): void {
+  /**
+   * Land name/identity sightings on persistent account rows — the single
+   * write path replacing the old in-memory contact index, which evaporated
+   * on exit and lost every push name history sync had delivered.
+   */
+  function observe(observations: AccountObservation[]): void {
+    const usable = observations.filter((o) => {
+      const jids = o.jids.filter(Boolean);
+      if (jids.length === 0) return false;
+      return jids.length > 1 || o.pushName != null || o.contactName != null || o.verifiedName != null;
+    });
+    if (usable.length === 0) return;
+    queues.enqueue(ACCOUNTS_QUEUE_KEY, async () => {
+      try {
+        const affected = await ops.observeAccounts(usable);
+        for (const jid of affected) emitter.emit("chat-updated", jid);
+      } catch (err) {
+        log.error({ err }, "failed to record account observations");
+      }
+    });
+  }
+
+  /** Everything a contact event tells us about one person, as an observation. */
+  function contactObservation(c: Contact): AccountObservation {
+    return {
+      jids: [c.id, c.lid, c.phoneNumber].filter(Boolean).map((j) => jidNormalizedUser(j!)),
+      pushName: c.notify ?? null,
+      // Only trustworthy names become contact/verified names: `name` is the
+      // user's own address-book entry, `verifiedName` is WhatsApp-verified.
+      contactName: c.name ?? null,
+      verifiedName: c.verifiedName ?? null,
+    };
+  }
+
+  /**
+   * Register lid ↔ phone-jid pairs. Pairing may merge two account rows (and
+   * fold duplicate individual chats) and re-keys the chat to the phone jid;
+   * every affected jid is announced so subscribers reload it — including a
+   * now-orphaned lid-keyed list entry, which the reload drops.
+   */
+  function registerPairs(aliases: Map<string, string>): void {
     for (const [lid, pn] of aliases) {
-      mutate(pn, async () => {
-        if (!(await ops.addAlias(lid, pn))) return false;
-        // The fold orphans any chat-list entry keyed by the lid; announce the
-        // lid so subscribers reload it (resolving to the canonical chat) and
-        // drop the stale entry. True emits for the canonical jid too.
-        emitter.emit("chat-updated", lid);
-        return true;
+      queues.enqueue(pn, async () => {
+        try {
+          const affected = await ops.registerJidPair(lid, pn);
+          for (const jid of affected) emitter.emit("chat-updated", jid);
+        } catch (err) {
+          log.error({ err, lid, pn }, "failed to register jid pair");
+        }
       });
     }
   }
@@ -312,7 +317,7 @@ export function createIngestor(conn: Connection, deps: Partial<IngestorDeps> = {
    */
   function handleStatus(status: ConnectionStatus): void {
     if (status !== "open") return;
-    registerOwnAlias();
+    registerOwnIdentity();
     if (pendingEncryptedEdits.size === 0) return;
     requestedEditHistory.clear();
     for (const [key, envelope] of [...pendingEncryptedEdits]) {
@@ -325,12 +330,15 @@ export function createIngestor(conn: Connection, deps: Partial<IngestorDeps> = {
    * only inside *other people's* quoted refs (`contextInfo.participant`),
    * which carry no alt-jid — so quoted replies to our own messages would
    * render the raw `@lid`. The socket knows both of our identities once the
-   * connection opens; register them like any other alias.
+   * connection opens; land them on the self account like any other pairing.
    */
-  function registerOwnAlias(): void {
+  function registerOwnIdentity(): void {
     const user = conn.getSocket()?.user;
-    if (!user?.id || !user.lid) return;
-    registerAliases(new Map([[jidNormalizedUser(user.lid), jidNormalizedUser(user.id)]]));
+    if (!user?.id) return;
+    const id = jidNormalizedUser(user.id);
+    const lid = user.lid ? jidNormalizedUser(user.lid) : null;
+    observe([{ jids: [id, lid], pushName: user.name ?? null }]);
+    if (lid) registerPairs(new Map([[lid, id]]));
   }
 
   function scheduleMediaDownload(jid: string, waMsg: WAMessage): void {
@@ -356,9 +364,8 @@ export function createIngestor(conn: Connection, deps: Partial<IngestorDeps> = {
    * History-synced message keys carry no alt-jid (unlike live messages), so a
    * `@lid` chat restored from history has no way to learn its phone number
    * from messages. Baileys' signal store keeps the lid↔pn pairs delivered at
-   * pairing time — resolve from there, register the alias (folding any
-   * lid-keyed rows into the canonical chat), and merge the number + any known
-   * contact name in.
+   * pairing time — resolve from there and register the pair (which merges the
+   * accounts and re-keys the chat to the phone jid).
    */
   function refreshLidPhoneNumber(jid: string): void {
     const lidMapping = conn.getSocket()?.signalRepository?.lidMapping;
@@ -366,13 +373,8 @@ export function createIngestor(conn: Connection, deps: Partial<IngestorDeps> = {
     lidMapping.getPNForLID(jid).then(
       (pn) => {
         const phoneJid = pn ? jidNormalizedUser(pn) : null;
-        const phoneNumber = phoneJid ? phoneNumberFromJid(phoneJid) : null;
-        if (!phoneNumber || !phoneJid) return;
-        const contactMeta = mapContact(contacts.get(phoneJid) ?? contacts.get(jid));
-        mutate(jid, async (cjid) => {
-          await ops.addAlias(jid, phoneJid);
-          return ops.mergeChatMeta(cjid, { ...contactMeta, phoneNumber }, false);
-        });
+        if (!phoneJid?.endsWith("@s.whatsapp.net")) return;
+        registerPairs(new Map([[jid, phoneJid]]));
       },
       (err: unknown) => log.warn({ err, jid }, "failed to resolve phone number for lid chat"),
     );
@@ -389,90 +391,61 @@ export function createIngestor(conn: Connection, deps: Partial<IngestorDeps> = {
   }
 
   /**
-   * Push names keyed by every identifier a contact carries. Includes `notify`
-   * (the peer's self-chosen push name) on purpose: the participants table is
-   * the push-name fallback for group sender labels — a saved-contact name
-   * still wins at label-resolution time (rule 1 in `resolveSenderLabel`).
+   * Push-name sightings carried by message keys — for group senders and
+   * individual peers alike. These are the only name source for non-contact
+   * group members (history-synced messages carry none, and contacts events
+   * only cover the address book); landing them on account rows retroactively
+   * names that sender's old messages everywhere.
    */
-  function participantNamesOf(contactList: Contact[]): Map<string, string> {
-    const names = new Map<string, string>();
-    for (const c of contactList) {
-      const name = c.name ?? c.notify ?? null;
-      if (!name) continue;
-      for (const key of [c.id, c.lid]) {
-        if (key) names.set(jidNormalizedUser(key), name);
-      }
-    }
-    return names;
-  }
-
-  function backfillParticipantNames(names: Map<string, string>): void {
-    if (names.size === 0) return;
-    ops.updateParticipantNames(names).catch((err: unknown) =>
-      log.warn({ err }, "failed to update participant names"),
-    );
-  }
-
-  /**
-   * Group message push names are the only name source for non-contact members
-   * (history-synced messages carry none, and contacts events only cover the
-   * address book). Feed them into the in-memory contact index — so group
-   * metadata mapped later picks them up — and into any participant rows that
-   * already exist, which retroactively names that sender's old messages.
-   */
-  function harvestGroupSenderNames(waMessages: WAMessage[]): void {
-    const names = new Map<string, string>();
+  function messageObservations(waMessages: WAMessage[]): AccountObservation[] {
+    const out: AccountObservation[] = [];
     for (const waMsg of waMessages) {
-      const sender = waMsg.key.participant;
-      if (waMsg.key.fromMe || !sender || !waMsg.pushName) continue;
-      const senderJid = jidNormalizedUser(sender);
-      const altJid = waMsg.key.participantAlt ? jidNormalizedUser(waMsg.key.participantAlt) : undefined;
-      indexContact({ id: senderJid, phoneNumber: altJid, notify: waMsg.pushName });
-      names.set(senderJid, waMsg.pushName);
-      if (altJid) names.set(altJid, waMsg.pushName);
+      if (waMsg.key.fromMe || !waMsg.pushName) continue;
+      const sender = waMsg.key.participant ?? waMsg.key.remoteJid;
+      if (!sender) continue;
+      const alt = waMsg.key.participant ? waMsg.key.participantAlt : waMsg.key.remoteJidAlt;
+      out.push({
+        jids: [jidNormalizedUser(sender), alt ? jidNormalizedUser(alt) : null],
+        pushName: waMsg.pushName,
+      });
     }
-    backfillParticipantNames(names);
+    return out;
   }
 
   /**
-   * Map group participants, filling nameless ones from the contact index
-   * (saved name or push name) under either of their addresses — metadata keys
-   * participants by lid while address-book contacts may be known by phone jid.
+   * Group-metadata participant names land as push names on purpose: `name`
+   * here is whatever the group exposes, not the user's own address book —
+   * a saved-contact name must always win at label time.
    */
-  function mapParticipantsWithNames(raw: GroupMetadata["participants"]): Chat["participants"] {
-    return mapGroupParticipants(raw).map((p, i) => {
-      if (p.displayName) return p;
-      const alt = raw[i]?.phoneNumber;
-      const c = contacts.get(p.jid) ?? (alt ? contacts.get(jidNormalizedUser(alt)) : undefined);
-      const name = c?.name ?? c?.notify ?? null;
-      return name ? { ...p, displayName: name } : p;
-    });
+  function participantObservations(raw: GroupMetadata["participants"]): AccountObservation[] {
+    return raw
+      .filter((p) => p.name ?? p.notify)
+      .map((p) => ({
+        jids: [jidNormalizedUser(p.id), p.phoneNumber ? jidNormalizedUser(p.phoneNumber) : null],
+        pushName: p.name ?? p.notify ?? null,
+      }));
   }
 
   function ingestMessages(jid: string, waMessages: WAMessage[], baseMeta: Partial<Chat>): void {
     const regular = waMessages.filter(isRegularMessage);
     const incoming = regular.map(mapWAMessage);
-    if (chatTypeOf(jid) === "group") harvestGroupSenderNames(regular);
+    observe(messageObservations(waMessages));
 
-    const meta = { ...baseMeta };
-    // A `@lid`-keyed chat carries no number of its own; inbound message keys
-    // do (their alt-jid), so harvest it whenever the chat meta lacks one.
-    if (chatTypeOf(jid) === "individual" && meta.phoneNumber == null) {
-      const phoneNumber = phoneNumberFromMessages(waMessages);
-      if (phoneNumber != null) meta.phoneNumber = phoneNumber;
-      else if (jid.endsWith("@lid")) refreshLidPhoneNumber(jid);
+    if (chatTypeOf(jid) === "individual") {
+      // Business accounts are rarely saved contacts, so their chats would
+      // render as "Not Contact" forever; their messages carry a WhatsApp-
+      // verified name, which lands on the peer account (a saved-contact name
+      // still wins at label time).
+      const bizName = verifiedBizNameFromMessages(waMessages);
+      if (bizName != null) observe([{ jids: [jid], verifiedName: bizName }]);
+      // Still keyed by `@lid` here means no message in this batch carried the
+      // phone-jid pairing — recover it from Baileys' signal store.
+      if (jid.endsWith("@lid")) refreshLidPhoneNumber(jid);
     }
-    // Business accounts are rarely saved contacts, so their chats would render
-    // as "Not Contact" forever; their messages carry a WhatsApp-verified name.
-    // Only fills a missing name — a saved-contact name always wins.
-    const bizName =
-      chatTypeOf(jid) === "individual" && baseMeta.displayName == null
-        ? verifiedBizNameFromMessages(waMessages)
-        : null;
 
-    if (incoming.length > 0 || Object.keys(meta).length > 2 || bizName != null) {
+    if (incoming.length > 0 || Object.keys(baseMeta).length > 2) {
       mutate(jid, async (cjid) => {
-        await ops.upsertChatMessages(cjid, meta, incoming, bizName);
+        await ops.upsertChatMessages(cjid, baseMeta, incoming);
         return true;
       });
     }
@@ -509,13 +482,14 @@ export function createIngestor(conn: Connection, deps: Partial<IngestorDeps> = {
       },
       "history.set received",
     );
-    for (const c of payload.contacts) indexContact(c);
     // History sync delivers push names as bare contacts (`{ id, notify }`) —
-    // often the only name we'll ever see for non-contact group members.
-    backfillParticipantNames(participantNamesOf(payload.contacts));
+    // often the only name we'll ever see for non-contact group members. This
+    // chunk arrives once at link time; persisting it is what keeps those
+    // names across restarts.
+    observe(payload.contacts.map(contactObservation));
 
     const { byJid: messagesByJid, aliases } = groupMessagesByJid(payload.messages);
-    registerAliases(aliases);
+    registerPairs(aliases);
     const jids = new Set<string>();
     for (const c of payload.chats) {
       if (c.id) jids.add(jidNormalizedUser(c.id));
@@ -525,7 +499,7 @@ export function createIngestor(conn: Connection, deps: Partial<IngestorDeps> = {
     for (const jid of jids) {
       if (jid === STATUS_BROADCAST_JID) continue;
       const waChat = payload.chats.find((c) => c.id && jidNormalizedUser(c.id) === jid);
-      const meta = waChat ? mapChat(waChat, contacts) : minimalMeta(jid);
+      const meta = waChat ? mapChat(waChat) : minimalMeta(jid);
       ingestMessages(jid, messagesByJid.get(jid) ?? [], meta);
     }
   }
@@ -536,7 +510,7 @@ export function createIngestor(conn: Connection, deps: Partial<IngestorDeps> = {
 
   function handleMessages(payload: { messages: WAMessage[] }): void {
     const { byJid, aliases } = groupMessagesByJid(payload.messages);
-    registerAliases(aliases);
+    registerPairs(aliases);
     for (const [jid, waMessages] of byJid) {
       ingestMessages(jid, waMessages, minimalMeta(jid));
     }
@@ -585,29 +559,18 @@ export function createIngestor(conn: Connection, deps: Partial<IngestorDeps> = {
       const sender = reactionSender(reaction.key);
       if (!sender) continue;
       const targetId = key.id;
-      const value = { emoji: reaction.text ?? "", sender };
+      const value = { emoji: reaction.text ?? "", senderJid: sender };
       mutate(jid, (cjid) => ops.applyReaction(cjid, targetId, value));
     }
   }
 
   function handleContacts(payload: Contact[]): void {
     log.debug({ count: payload.length }, "contacts received");
-    for (const c of payload) {
-      indexContact(c);
-      // A contact can arrive after its chat was already persisted (events have
-      // no guaranteed order). Push the name/number onto every chat the contact
-      // might be keyed under so a chat never stays stuck at "Not Contact" — but
-      // only onto chats that already exist (don't conjure chats from contacts).
-      const meta = mapContact(c);
-      if (meta.displayName != null || meta.phoneNumber != null) {
-        for (const key of [c.id, c.lid, c.phoneNumber]) {
-          if (!key) continue;
-          const jid = jidNormalizedUser(key);
-          mutate(jid, (cjid) => ops.mergeChatMeta(cjid, meta, false));
-        }
-      }
-    }
-    backfillParticipantNames(participantNamesOf(payload));
+    // A contact can arrive after its chat was already persisted (events have
+    // no guaranteed order). Order no longer matters: the names land on the
+    // account row whenever they're seen, and `observeAccounts` announces any
+    // existing chat of that peer so it never stays stuck at "Not Contact".
+    observe(payload.map(contactObservation));
   }
 
   function handleChats(payload: BaileysChat[] | Partial<BaileysChat>[]): void {
@@ -615,7 +578,7 @@ export function createIngestor(conn: Connection, deps: Partial<IngestorDeps> = {
       if (!waChat.id) continue;
       const jid = jidNormalizedUser(waChat.id);
       if (jid === STATUS_BROADCAST_JID) continue;
-      const meta = mapChat(waChat, contacts);
+      const meta = mapChat(waChat);
       mutate(jid, (cjid) => ops.mergeChatMeta(cjid, meta, true));
     }
   }
@@ -625,9 +588,9 @@ export function createIngestor(conn: Connection, deps: Partial<IngestorDeps> = {
     if (!sock) return;
     sock.groupMetadata(jid).then(
       (meta: GroupMetadata) => {
-        registerAliases(groupParticipantAliases(meta.participants));
-        const partial = { ...mapGroupMetadata(meta), participants: mapParticipantsWithNames(meta.participants) };
-        mutate(jid, (cjid) => ops.mergeChatMeta(cjid, partial, true));
+        registerPairs(groupParticipantAliases(meta.participants));
+        observe(participantObservations(meta.participants));
+        mutate(jid, (cjid) => ops.mergeChatMeta(cjid, mapGroupMetadata(meta), true));
       },
       (err: unknown) => log.warn({ err, jid }, "failed to refresh group metadata"),
     );
@@ -639,13 +602,11 @@ export function createIngestor(conn: Connection, deps: Partial<IngestorDeps> = {
         if (!meta.id) continue;
         const jid = jidNormalizedUser(meta.id);
         const partial: Partial<Chat> = { jid, type: "group" };
-        if (meta.subject != null) {
-          partial.displayName = meta.subject;
-          partial.groupSubject = meta.subject;
-        }
+        if (meta.subject != null) partial.groupSubject = meta.subject;
         if (meta.participants) {
-          registerAliases(groupParticipantAliases(meta.participants));
-          partial.participants = mapParticipantsWithNames(meta.participants);
+          registerPairs(groupParticipantAliases(meta.participants));
+          observe(participantObservations(meta.participants));
+          partial.participants = mapGroupParticipants(meta.participants);
         }
         mutate(jid, (cjid) => ops.mergeChatMeta(cjid, partial, true));
       }
