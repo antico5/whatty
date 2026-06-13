@@ -1,4 +1,4 @@
-import { useKeyboard } from "@opentui/react";
+import { useKeyboard, useRenderer } from "@opentui/react";
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import type { AppStore } from "../store/appStore.js";
 import { StoreProvider, useAppStore, useConnection, usePhase } from "../store/StoreContext.js";
@@ -95,10 +95,17 @@ export interface AppProps {
 }
 
 export function App({ store, onQuit }: AppProps) {
+  const renderer = useRenderer();
   useKeyboard((key) => {
-    // Ctrl+C is deliberately *not* handled: it's left to the terminal (e.g. copy
-    // in tilix). Ctrl+D is the app's quit key instead.
+    // Ctrl+D is the app's quit key (Ctrl+C is reserved for copy, below).
     if (key.ctrl && key.name === "d") onQuit();
+    // Ctrl+C copies the current in-app selection to the system clipboard (via
+    // OSC 52). Because we capture the mouse, drag-selection is opentui's own —
+    // the terminal/clipboard knows nothing about it unless we push it here.
+    if (key.ctrl && key.name === "c") {
+      const text = renderer.getSelection()?.getSelectedText();
+      if (text) renderer.copyToClipboardOSC52(text);
+    }
   });
 
   return (

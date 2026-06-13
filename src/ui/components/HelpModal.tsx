@@ -7,6 +7,7 @@ interface HelpModalProps {
 
 const BINDINGS: [string, string][] = [
   ["R", "toggle read receipts"],
+  ["Ctrl+C", "copy the selection"],
   ["Ctrl+D", "quit the app"],
 ];
 

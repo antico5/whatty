@@ -86,14 +86,18 @@ deletes its credentials (`auth/`); chat history and media are never touched.
 | `R` | — | Toggle read receipts on/off | — |
 | `H` | — | Show / hide help | — |
 | `Esc` | — | Back to account selection | Back to the chat list |
+| `Ctrl+C` | Copy the selection | Copy the selection | Copy the selection |
 | `Ctrl+D` | Quit the app | Quit the app | Quit the app |
 | _Paste_ | — | — | Inserts clipboard text into the draft (single line) |
 | _(typing)_ | — | — | Edits the draft input (navigation keys above still work) |
 
-`Ctrl+C` is intentionally left to the terminal (e.g. to copy a selection) — use
-`Ctrl+D` to quit. Paste uses your terminal's normal paste action (Ctrl+Shift+V,
-middle-click, or whatever you've bound it to), delivered via bracketed paste;
-newlines are flattened to spaces.
+`Ctrl+C` copies the current selection to the system clipboard (via OSC 52). The app
+captures the mouse, so drag-selecting highlights just the message text; `Ctrl+C` then
+copies it. (Your terminal must allow programs to set the clipboard for this to work;
+otherwise hold `Shift` while dragging to make a native terminal selection and copy that
+the usual way.) `Ctrl+D` quits. Paste uses your terminal's normal paste action
+(Ctrl+Shift+V, middle-click, or whatever you've bound it to), delivered via bracketed
+paste; newlines are flattened to spaces.
 
 ## History sync
 
