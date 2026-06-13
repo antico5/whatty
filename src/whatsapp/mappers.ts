@@ -82,12 +82,15 @@ function innerObject(entry: ContentEntry | null): WAMessageRecord | null {
 }
 
 /**
- * View-once messages show up two ways: wrapped in a dedicated container
- * (unwrapped already by `normalizeMessageContent`, so we check the raw
- * message for the wrapper keys) or as a `viewOnce: true` flag directly on
- * the inner media payload.
+ * View-once messages show up three ways: as a key-level `isViewOnce` flag with
+ * no body (Baileys sets this when WhatsApp sends an `<unavailable type="view_once">`
+ * stanza — the bytes are never delivered to a passive/lurking client, so the
+ * envelope is empty), wrapped in a dedicated container (unwrapped already by
+ * `normalizeMessageContent`, so we check the raw message for the wrapper keys),
+ * or as a `viewOnce: true` flag directly on the inner media payload.
  */
 function isViewOnce(waMsg: WAMessage): boolean {
+  if (waMsg.key.isViewOnce) return true;
   const raw = waMsg.message as WAMessageRecord | null | undefined;
   if (raw && (raw.viewOnceMessage || raw.viewOnceMessageV2 || raw.viewOnceMessageV2Extension)) {
     return true;
@@ -115,11 +118,14 @@ function mediaTypeForKey(key: string): MessageType | null {
 
 /** Classify a message's domain `MessageType`, including view-once detection. */
 export function messageType(waMsg: WAMessage): MessageType {
+  // Checked before the no-content early-return: an unavailable view-once arrives
+  // as an empty envelope (the `isViewOnce` key flag, no body), and must still
+  // classify as `viewOnce` so it renders a `[view once]` hint, not a blank row.
+  if (isViewOnce(waMsg)) return "viewOnce";
+
   const content = normalizeMessageContent(waMsg.message);
   const entry = contentEntry(content);
   if (!entry) return "other";
-
-  if (isViewOnce(waMsg)) return "viewOnce";
 
   if (entry.key === "conversation" || entry.key === "extendedTextMessage") return "text";
   const mediaType = mediaTypeForKey(entry.key);

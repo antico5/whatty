@@ -87,6 +87,12 @@ export function isRegularMessage(waMsg: WAMessage): boolean {
   if (encryptedEditOf(waMsg)) return false;
   if (waMsg.message?.editedMessage || waMsg.message?.protocolMessage || waMsg.message?.reactionMessage) return false;
   const key = getContentType(normalizeMessageContent(waMsg.message));
+  // A message that has a body but resolves to no displayable content type is a
+  // pure protocol artifact — most often a `senderKeyDistributionMessage` that
+  // Baileys split into its own `<id>-N` stanza. Persisting it stamps a blank
+  // duplicate row beside the real message. (An empty envelope with *no* body —
+  // e.g. an unavailable view-once or a system stub — is left alone.)
+  if (waMsg.message && !key) return false;
   return key !== "protocolMessage" && key !== "reactionMessage";
 }
 

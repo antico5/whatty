@@ -70,7 +70,9 @@ function layoutLines(message: Message, chat: Chat, maxWidth: number): LineData[]
     const MEDIA_TYPES = new Set<string>(["image", "video", "audio", "document", "sticker", "viewOnce"]);
     if (MEDIA_TYPES.has(message.type)) {
       const typeLabel = mediaTypeLabel(message.type);
-      const hint = `${typeLabel} not downloaded`;
+      // View-once bytes are never delivered to a passive client, so "not
+      // downloaded" would mislead — the bare `[view once]` label is the truth.
+      const hint = message.type === "viewOnce" ? typeLabel : `${typeLabel} not downloaded`;
       lines.push({ kind: "text", text: truncate(hint, maxWidth) });
     }
     if (resolvedText) {
