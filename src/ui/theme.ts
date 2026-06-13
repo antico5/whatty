@@ -36,6 +36,8 @@ export const theme = {
   deleted: { fg: "red", attributes: ITALIC } satisfies TextStyle,
   /** Failed-send indicator. */
   failed: { fg: "red" } satisfies TextStyle,
+  /** Contextual hints / help prompts. */
+  hint: { fg: "yellow" } satisfies TextStyle,
 } as const;
 
 /**

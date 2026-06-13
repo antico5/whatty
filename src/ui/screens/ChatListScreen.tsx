@@ -4,12 +4,13 @@ import { useAppStore, useChats } from "../../store/StoreContext.js";
 import { useNavigation } from "../App.js";
 import { ChatListItem } from "../components/ChatListItem.js";
 import { ConfirmModal } from "../components/ConfirmModal.js";
+import { HelpModal } from "../components/HelpModal.js";
 import { layoutWidth } from "../layout.js";
 import { theme } from "../theme.js";
 
 const ROWS_PER_ENTRY = 2;
-/** One row at the bottom is reserved for the shared status bar (rendered by App.tsx). */
-const FOOTER_ROWS = 1;
+/** Status bar (App.tsx) + hint bar = 2 fixed footer rows. */
+const FOOTER_ROWS = 2;
 
 export function ChatListScreen({ initialSelectedJid }: { initialSelectedJid?: string | null }) {
   const chats = useChats();
@@ -23,6 +24,7 @@ export function ChatListScreen({ initialSelectedJid }: { initialSelectedJid?: st
   const [selectedJid, setSelectedJid] = useState<string | null>(initialSelectedJid ?? null);
   // When true the ConfirmModal is shown and the list keyboard is suppressed.
   const [confirmingExit, setConfirmingExit] = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
 
   useEffect(() => {
     if (selectedJid === null && chats.length > 0) {
@@ -36,11 +38,16 @@ export function ChatListScreen({ initialSelectedJid }: { initialSelectedJid?: st
     return index === -1 ? 0 : index;
   }, [chats, effectiveJid]);
 
-  // List navigation — suppressed while the exit modal is open.
+  // List navigation — suppressed while any modal is open.
   useKeyboard((key) => {
     if (confirmingExit) return;
+    if (showHelp) return;
     if (key.name === "escape") {
       setConfirmingExit(true);
+      return;
+    }
+    if (key.name === "h" && !key.ctrl && !key.meta) {
+      setShowHelp(true);
       return;
     }
     if (chats.length === 0) return;
@@ -75,6 +82,8 @@ export function ChatListScreen({ initialSelectedJid }: { initialSelectedJid?: st
       {visibleChats.map((chat) => (
         <ChatListItem key={chat.jid} chat={chat} selected={chat.jid === effectiveJid} width={width} />
       ))}
+      <box style={{ flexGrow: 1 }} />
+      <text {...theme.hint}>{"  Press H for help"}</text>
       {confirmingExit && (
         <ConfirmModal
           message="Go back to account selection?"
@@ -85,6 +94,7 @@ export function ChatListScreen({ initialSelectedJid }: { initialSelectedJid?: st
           onCancel={() => setConfirmingExit(false)}
         />
       )}
+      {showHelp && <HelpModal onClose={() => setShowHelp(false)} />}
     </box>
   );
 }
