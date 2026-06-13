@@ -9,6 +9,25 @@ import { hasMediaContent, MEDIA_AUTODOWNLOAD_MAX_AGE_MS, mediaJobName } from "./
 
 const DOWNLOAD_TIMEOUT_MS = 60_000;
 
+/**
+ * 410 Gone / 403 Forbidden from the media CDN are terminal: the encrypted blob
+ * has been evicted (410) or the signed URL is rejected (403), and Baileys has
+ * already tried a sender re-upload within the download call. Re-running the job
+ * with the same stored payload can't recover it, so we mark the message's media
+ * unavailable instead of burning the retry budget.
+ */
+const PERMANENT_MEDIA_STATUSES: ReadonlySet<number> = new Set([403, 410]);
+
+/** HTTP status carried by a Baileys media-download error (Boom / axios shapes), if any. */
+function downloadHttpStatus(err: unknown): number | undefined {
+  if (err && typeof err === "object") {
+    const e = err as { output?: { statusCode?: unknown }; statusCode?: unknown; response?: { status?: unknown } };
+    const code = e.output?.statusCode ?? e.statusCode ?? e.response?.status;
+    if (typeof code === "number") return code;
+  }
+  return undefined;
+}
+
 export interface DownloadMediaPayload {
   jid: string;
   messageId: string;
@@ -55,7 +74,18 @@ export const downloadMedia: JobHandler = async (payload, ctx) => {
   const sock = ctx.conn.getSocket();
   if (!sock) throw new RetryLater("no socket for media download");
 
-  const downloaded = await withTimeout(downloadMediaPayload(sock, raw), DOWNLOAD_TIMEOUT_MS, "media download");
+  let downloaded;
+  try {
+    downloaded = await withTimeout(downloadMediaPayload(sock, raw), DOWNLOAD_TIMEOUT_MS, "media download");
+  } catch (err) {
+    const status = downloadHttpStatus(err);
+    if (status != null && PERMANENT_MEDIA_STATUSES.has(status)) {
+      ctx.log.warn({ jid: cjid, messageId, status }, "media gone from server — marking unavailable (no retry)");
+      const marked = await chatOps.markMediaUnavailable(cjid, messageId);
+      return { changes: marked ? [{ table: "messages", jid: cjid, messageId }] : [] };
+    }
+    throw err;
+  }
   if (!downloaded) return { changes: [] };
 
   const ref = await saveMedia(cjid, {

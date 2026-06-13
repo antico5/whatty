@@ -107,8 +107,13 @@ file path.
 
 **Scrolling such a message into view downloads its media on demand**, regardless of age.
 The fetch runs in the background and the entry switches from the hint to a file link when
-it lands — no key to press. Re-scrolling a message whose download previously failed
-retries it.
+it lands — no key to press. A download that failed for a transient reason (offline, a
+network blip) retries when you scroll back to it.
+
+If WhatsApp's servers no longer have the media — the blob was evicted from the CDN (HTTP
+410) or the URL is rejected (HTTP 403) — it can't be recovered, so the entry switches to
+a `[type — unavailable]` hint and the app stops retrying it (re-scrolling won't re-attempt
+a dead URL).
 
 Downloaded media is shown as a plain-text `file://` URL pointing at a short symlink
 (`<tmpdir>/wt/<hash>.<ext>`, e.g. `/tmp/wt/ab12cd34.jpg`) so the line stays compact —

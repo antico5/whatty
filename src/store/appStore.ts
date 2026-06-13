@@ -498,8 +498,9 @@ export function createAppStore(deps: Partial<AppStoreDeps> = {}): AppStore {
       const message = chat?.messages.find((m) => m.id === messageId);
       // The job handler reads the message's `raw` payload from the DB and is
       // idempotent (no-op once `media` is linked); the deterministic name dedups
-      // repeat enqueues while a download is in flight.
-      if (!message || message.media != null) return;
+      // repeat enqueues while a download is in flight. Skip media already known
+      // gone (410/403) so re-scrolling past it doesn't re-hit a dead URL.
+      if (!message || message.media != null || message.mediaUnavailable) return;
       const payload: DownloadMediaPayload = { jid, messageId, timestampMs: message.timestamp, force: true };
       void processor
         .enqueueNamed("download-media", mediaJobName(jid, messageId), payload)

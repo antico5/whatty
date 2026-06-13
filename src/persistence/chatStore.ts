@@ -71,6 +71,7 @@ interface MessageRow {
   deleted_at: number | null;
   edited: number;
   media: string | null;
+  media_unavailable: number;
   quoted: string | null;
   raw: string | null;
 }
@@ -179,6 +180,7 @@ function messageFromRow(
     raw: parseJson(row.raw),
   };
   if (row.edited) message.edited = true;
+  if (row.media_unavailable && message.media == null) message.mediaUnavailable = true;
   if (reactions && reactions.length > 0) message.reactions = reactions;
   if (isGroup && row.text?.includes("@")) {
     // `@`-mention digits in group text reference jids (often `@lid`), not phone
@@ -376,8 +378,8 @@ function upsertMessageRow(db: AccountDb, chatId: number, m: Message): void {
     .prepare(
       `INSERT OR REPLACE INTO messages
        (chat_id, id, sender_account_id, direction, timestamp, type, text,
-        delivery_status, deleted_at, edited, media, quoted, raw)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        delivery_status, deleted_at, edited, media, media_unavailable, quoted, raw)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       chatId,
@@ -391,6 +393,7 @@ function upsertMessageRow(db: AccountDb, chatId: number, m: Message): void {
       m.deletedAt ?? (m.deleted ? m.timestamp : null),
       m.edited ?? false,
       toJson(m.media),
+      m.mediaUnavailable ? 1 : 0,
       quotedToJson(db, m.quoted),
       toJson(m.raw),
     );
@@ -541,6 +544,11 @@ export interface ChatOps {
   applyMessageDeletion(jid: string, messageId: string, deletedAt: number): Promise<boolean>;
   /** Attach a downloaded MediaRef; no-op if the message is gone or already has media. */
   setMessageMedia(jid: string, messageId: string, media: MediaRef): Promise<boolean>;
+  /**
+   * Flag a message's media as permanently undownloadable (server 410/403).
+   * No-op if the message is gone or already has media. Returns whether it changed.
+   */
+  markMediaUnavailable(jid: string, messageId: string): Promise<boolean>;
   getMessage(jid: string, messageId: string): Promise<Message | null>;
   /** Indexed cross-chat lookup by message id (replaces the all-chats scan). */
   findMessageById(messageId: string): Promise<FoundMessage | null>;
@@ -730,9 +738,22 @@ export const chatOps: ChatOps = {
     if (!row) return false;
     const stored = getMessageRow(db, row.id, messageId);
     if (!stored || stored.media != null) return false;
+    // Clear any prior "unavailable" flag — a later retry actually succeeded.
     db.sql
-      .prepare("UPDATE messages SET media = ? WHERE chat_id = ? AND id = ? AND media IS NULL")
+      .prepare("UPDATE messages SET media = ?, media_unavailable = 0 WHERE chat_id = ? AND id = ? AND media IS NULL")
       .run(toJson(media), row.id, messageId);
+    return true;
+  },
+
+  async markMediaUnavailable(jid, messageId) {
+    const db = await getActiveDb();
+    const row = resolveChatRow(db, jid);
+    if (!row) return false;
+    const stored = getMessageRow(db, row.id, messageId);
+    if (!stored || stored.media != null || stored.media_unavailable) return false;
+    db.sql
+      .prepare("UPDATE messages SET media_unavailable = 1 WHERE chat_id = ? AND id = ? AND media IS NULL")
+      .run(row.id, messageId);
     return true;
   },
 

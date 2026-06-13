@@ -81,13 +81,21 @@ function layoutLines(message: Message, chat: Chat, maxWidth: number): LineData[]
     }
   } else {
     // No downloaded media — show the type label as a hint when the message type
-    // indicates there should be media (e.g. skipped by the 7-day auto-download gate,
-    // or not yet fetched; the chat view kicks off a download as it scrolls into view).
+    // indicates there should be media. "unavailable" means the server no longer
+    // has it (410/403, won't be retried); otherwise it's not fetched yet and the
+    // chat view kicks off a download as it scrolls into view.
     if (MEDIA_MESSAGE_TYPES.has(message.type)) {
       const typeLabel = mediaTypeLabel(message.type);
-      // View-once bytes are never delivered to a passive client, so "not
-      // downloaded" would mislead — the bare `[view once]` label is the truth.
-      const hint = message.type === "viewOnce" ? typeLabel : `${typeLabel} not downloaded`;
+      // View-once media is generally unfetchable on a linked device (WhatsApp
+      // keeps it phone-only, and history-synced view-once URLs have long expired),
+      // so "not downloaded" would dangle a false promise — the bare `[view once]`
+      // label stays neutral.
+      const hint =
+        message.type === "viewOnce"
+          ? typeLabel
+          : message.mediaUnavailable
+            ? `${typeLabel} unavailable`
+            : `${typeLabel} not downloaded`;
       lines.push({ kind: "text", text: truncate(hint, maxWidth) });
     }
     if (resolvedText) {

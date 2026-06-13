@@ -98,7 +98,7 @@ export function ChatViewScreen({ jid }: ChatViewScreenProps) {
   // media ids, so the effect fires only when that set changes and stops
   // re-firing for each id once its download lands and clears `media` on reload.
   const pendingMediaIds = visibleMessages
-    .filter((m) => m.media == null && MEDIA_MESSAGE_TYPES.has(m.type))
+    .filter((m) => m.media == null && !m.mediaUnavailable && MEDIA_MESSAGE_TYPES.has(m.type))
     .map((m) => m.id);
   const pendingMediaKey = pendingMediaIds.join(",");
   useEffect(() => {

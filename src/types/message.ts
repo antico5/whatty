@@ -39,6 +39,10 @@ export interface Message {
   type: MessageType;
   text: string | null;
   media: MediaRef | null;
+  /** Media download failed permanently (server 410/403 — the blob is gone from
+   * WhatsApp's CDN). Mutually exclusive with `media` in practice; the UI shows
+   * an "unavailable" hint and stops trying to fetch it. */
+  mediaUnavailable?: boolean;
   quoted: QuotedRef | null;
   deliveryStatus: DeliveryStatus | null;
   deleted: boolean;

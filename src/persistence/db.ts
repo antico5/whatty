@@ -18,7 +18,7 @@ import { openSqlite, type SqlDatabase } from "./sqlite.js";
  * Media blobs and the rotating log file deliberately stay on the filesystem.
  */
 
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 
 const SCHEMA: string[] = [
   `CREATE TABLE IF NOT EXISTS accounts (
@@ -71,6 +71,10 @@ const SCHEMA: string[] = [
     deleted_at INTEGER,
     edited INTEGER NOT NULL DEFAULT 0,
     media TEXT,
+    -- Set when a media download failed permanently (server returned 410/403):
+    -- the blob is gone from WhatsApp's CDN, so we stop retrying and render an
+    -- "unavailable" hint instead of "not downloaded".
+    media_unavailable INTEGER NOT NULL DEFAULT 0,
     quoted TEXT,
     raw TEXT,
     PRIMARY KEY (chat_id, id, sender_account_id)
@@ -123,28 +127,40 @@ export interface AccountDb {
 }
 
 function migrate(sql: SqlDatabase): void {
-  const row = sql.prepare<{ user_version: number }>("PRAGMA user_version").get()!;
-  if (row.user_version >= SCHEMA_VERSION) return;
-  if (row.user_version === 3) {
-    sql.exec("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
-    sql.exec("PRAGMA user_version = 4");
+  const { user_version: from } = sql.prepare<{ user_version: number }>("PRAGMA user_version").get()!;
+  if (from >= SCHEMA_VERSION) return;
+
+  // Fresh database: install the current schema directly.
+  if (from === 0) {
+    for (const stmt of SCHEMA) sql.exec(stmt);
+    sql.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
     return;
   }
-  if (row.user_version === 2) {
-    sql.exec("ALTER TABLE chats ADD COLUMN unread_count INTEGER NOT NULL DEFAULT 0");
-    sql.exec("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
-    sql.exec("PRAGMA user_version = 4");
-    return;
-  }
-  // No migration path exists from older schemas, and we never delete chat
-  // data ourselves — the user must wipe the data dir and re-link the device.
-  if (row.user_version > 0) {
+
+  // No migration path exists from the earliest pre-release schema (v1), and we
+  // never delete chat data ourselves — the user must wipe the data dir and re-link.
+  if (from < 2) {
     throw new Error(
-      `chats.db uses schema v${row.user_version}, but this build needs v${SCHEMA_VERSION} ` +
+      `chats.db uses schema v${from}, but this build needs v${SCHEMA_VERSION} ` +
         `and there is no migration — delete the data directory (${dataDir()}) and re-link your device`,
     );
   }
-  for (const stmt of SCHEMA) sql.exec(stmt);
+
+  // Incremental, additive steps applied in order from the on-disk version up to
+  // current. Each runs exactly once for a given upgrade.
+  let v = from;
+  if (v === 2) {
+    sql.exec("ALTER TABLE chats ADD COLUMN unread_count INTEGER NOT NULL DEFAULT 0");
+    v = 3;
+  }
+  if (v === 3) {
+    sql.exec("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+    v = 4;
+  }
+  if (v === 4) {
+    sql.exec("ALTER TABLE messages ADD COLUMN media_unavailable INTEGER NOT NULL DEFAULT 0");
+    v = 5;
+  }
   sql.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
 }
 

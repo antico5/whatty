@@ -84,10 +84,13 @@ function innerObject(entry: ContentEntry | null): WAMessageRecord | null {
 /**
  * View-once messages show up three ways: as a key-level `isViewOnce` flag with
  * no body (Baileys sets this when WhatsApp sends an `<unavailable type="view_once">`
- * stanza — the bytes are never delivered to a passive/lurking client, so the
- * envelope is empty), wrapped in a dedicated container (unwrapped already by
- * `normalizeMessageContent`, so we check the raw message for the wrapper keys),
- * or as a `viewOnce: true` flag directly on the inner media payload.
+ * stanza — its "open on your phone only" restriction: the server hands a linked
+ * device just a placeholder and keeps the media on the phone. This hits only
+ * some view-once messages — most arrive here with full content — and isn't about
+ * being offline: it happens even when we receive the message live), wrapped in a
+ * dedicated container (unwrapped already by `normalizeMessageContent`, so we
+ * check the raw message for the wrapper keys), or as a `viewOnce: true` flag
+ * directly on the inner media payload.
  */
 function isViewOnce(waMsg: WAMessage): boolean {
   if (waMsg.key.isViewOnce) return true;
