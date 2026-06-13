@@ -1,7 +1,7 @@
 import { chatOps } from "../../persistence/chatStore.js";
 import { getActiveDb } from "../../persistence/db.js";
 import { saveMedia } from "../../persistence/mediaStore.js";
-import { downloadMediaPayload } from "../../whatsapp/media.js";
+import { downloadMediaPayload, type MediaPayload } from "../../whatsapp/media.js";
 import { rawWAMessage } from "../../whatsapp/mappers.js";
 import { withTimeout } from "../../util/withTimeout.js";
 import { RetryLater, type ChildJob, type JobHandler } from "../types.js";
@@ -74,7 +74,7 @@ export const downloadMedia: JobHandler = async (payload, ctx) => {
   const sock = ctx.conn.getSocket();
   if (!sock) throw new RetryLater("no socket for media download");
 
-  let downloaded;
+  let downloaded: MediaPayload | null;
   try {
     downloaded = await withTimeout(downloadMediaPayload(sock, raw), DOWNLOAD_TIMEOUT_MS, "media download");
   } catch (err) {
