@@ -91,13 +91,16 @@ deletes its credentials (`auth/`); chat history and media are never touched.
 | _Paste_ | — | — | Inserts clipboard text into the draft (single line) |
 | _(typing)_ | — | — | Edits the draft input (navigation keys above still work) |
 
-`Ctrl+C` copies the current selection to the system clipboard (via OSC 52). The app
-captures the mouse, so drag-selecting highlights just the message text; `Ctrl+C` then
-copies it. (Your terminal must allow programs to set the clipboard for this to work;
-otherwise hold `Shift` while dragging to make a native terminal selection and copy that
-the usual way.) `Ctrl+D` quits. Paste uses your terminal's normal paste action
-(Ctrl+Shift+V, middle-click, or whatever you've bound it to), delivered via bracketed
-paste; newlines are flattened to spaces.
+`Ctrl+C` copies the current selection to the system clipboard. The app captures the
+mouse, so drag-selecting highlights just the message text; `Ctrl+C` then copies it. The
+copy is piped to a native clipboard helper — `wl-copy` (Wayland), `xclip` (X11),
+`pbcopy` (macOS) or `clip` (Windows) — so the matching tool must be installed; OSC 52 is
+*not* used, since VTE terminals (tilix, gnome-terminal) don't honour it. If your terminal
+already binds `Ctrl+C` to copy (e.g. tilix `terminal-copy`), that binding only fires when
+a *native* terminal selection exists, so it doesn't conflict with the in-app copy; to use
+it, hold `Shift` while dragging to make a native selection. `Ctrl+D` quits. Paste uses
+your terminal's normal paste action (Ctrl+Shift+V, middle-click, or whatever you've bound
+it to), delivered via bracketed paste; newlines are flattened to spaces.
 
 ## History sync
 

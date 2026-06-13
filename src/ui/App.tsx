@@ -4,6 +4,7 @@ import type { AppStore } from "../store/appStore.js";
 import { StoreProvider, useAppStore, useConnection, usePhase } from "../store/StoreContext.js";
 import { StatusBar } from "./components/StatusBar.js";
 import { LAYOUT_MAX_WIDTH } from "./layout.js";
+import { copyToClipboard } from "./util/clipboard.js";
 import { AccountSelectScreen } from "./screens/AccountSelectScreen.js";
 import { ChatListScreen } from "./screens/ChatListScreen.js";
 import { ChatViewScreen } from "./screens/ChatViewScreen.js";
@@ -99,12 +100,14 @@ export function App({ store, onQuit }: AppProps) {
   useKeyboard((key) => {
     // Ctrl+D is the app's quit key (Ctrl+C is reserved for copy, below).
     if (key.ctrl && key.name === "d") onQuit();
-    // Ctrl+C copies the current in-app selection to the system clipboard (via
-    // OSC 52). Because we capture the mouse, drag-selection is opentui's own —
-    // the terminal/clipboard knows nothing about it unless we push it here.
+    // Ctrl+C copies the current in-app selection to the system clipboard.
+    // Because we capture the mouse, drag-selection is opentui's own — the
+    // terminal/clipboard knows nothing about it unless we push it here. We pipe
+    // to a native clipboard helper rather than OSC 52, which VTE terminals
+    // (tilix) don't honour.
     if (key.ctrl && key.name === "c") {
       const text = renderer.getSelection()?.getSelectedText();
-      if (text) renderer.copyToClipboardOSC52(text);
+      if (text) copyToClipboard(text);
     }
   });
 
