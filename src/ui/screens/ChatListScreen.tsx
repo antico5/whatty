@@ -9,8 +9,17 @@ import { layoutWidth } from "../layout.js";
 import { theme } from "../theme.js";
 
 const ROWS_PER_ENTRY = 2;
-/** Status bar (App.tsx) + hint bar = 2 fixed footer rows. */
-const FOOTER_ROWS = 2;
+/**
+ * Fixed rows below the scrollable list, measured against the full terminal height:
+ * App's `<StatusBar/>` (1) + the read-receipts/help hint row (1) + the blank line
+ * above it (that row's `marginTop: 1`) = 3. The `flexGrow` spacer is the flexible
+ * filler and is not counted. Undercounting this makes `visibleCount` render one item
+ * too many; the column then overflows by a row and — because opentui boxes default to
+ * `flexShrink: 1` — Yoga silently collapses a chat row to one line instead of clipping,
+ * desyncing the render from `ROWS_PER_ENTRY`. (`ChatListItem`'s root also pins
+ * `flexShrink: 0` as a backstop.)
+ */
+const FOOTER_ROWS = 3;
 
 export function ChatListScreen({
   initialSelectedJid,

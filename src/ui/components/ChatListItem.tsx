@@ -76,7 +76,11 @@ export function ChatListItem({ chat, selected, width }: ChatListItemProps) {
   const bar = selected ? "┃" : " ";
 
   return (
-    <box style={{ flexDirection: "row" }}>
+    // flexShrink: 0 — a chat row is always exactly two lines (header + preview). opentui
+    // boxes default to flexShrink: 1, so a list that overflows the terminal height would
+    // otherwise compress a row to one line, desyncing the render from ChatListScreen's
+    // ROWS_PER_ENTRY scroll math (see FOOTER_ROWS there).
+    <box style={{ flexDirection: "row", flexShrink: 0 }}>
       <box style={{ flexDirection: "column" }}>
         <text {...barStyle}>{bar}</text>
         <text {...barStyle}>{bar}</text>
