@@ -8,6 +8,7 @@ import {
 } from "../persistence/accounts.js";
 import {
   backfillTextFromRaw,
+  chatOps,
   loadAllChats as defaultLoadAllChats,
   loadChat as defaultLoadChat,
 } from "../persistence/chatStore.js";
@@ -86,6 +87,8 @@ export interface AppStore {
   getDiskUsage(): DiskUsage | null;
   getReadReceipts(): boolean;
   toggleReadReceipts(): void;
+  /** If read receipts are ON, send blue ticks for the chat's unread inbound messages and clear its badge. */
+  markChatRead(jid: string): void;
   /** If `jid` is a group with no participants stored, fetches fresh group metadata in the background. */
   refreshGroupIfNeeded(jid: string): void;
 }
@@ -439,6 +442,32 @@ export function createAppStore(deps: Partial<AppStoreDeps> = {}): AppStore {
       readReceipts = !readReceipts;
       setReadReceipts(activeDb, readReceipts);
       notify();
+    },
+
+    markChatRead(jid: string): void {
+      if (readonly || !readReceipts || !connection) return;
+      const chat = chats.find((c) => c.jid === jid);
+      if (!chat || chat.unreadCount <= 0) return;
+      // We don't track per-message read state, so trust the server's unread
+      // count: mark the most recent N inbound messages, which WhatsApp treats
+      // as reading everything up to the latest.
+      const inbound = chat.messages.filter((m) => m.direction === "inbound" && !m.deleted);
+      const recent = inbound.slice(-chat.unreadCount);
+      if (recent.length === 0) return;
+      const isGroup = chat.type === "group";
+      const keys = recent.map((m) => ({
+        remoteJid: chat.jid,
+        id: m.id,
+        fromMe: false,
+        ...(isGroup && m.senderJid ? { participant: m.senderJid } : {}),
+      }));
+      void connection
+        .sendReadReceipts(keys)
+        .then(() => chatOps.clearUnread(jid))
+        .then((cleared) => {
+          if (cleared) reloadChat(jid);
+        })
+        .catch((err) => log.error({ err, jid }, "failed to send read receipts"));
     },
 
     refreshGroupIfNeeded(jid: string): void {

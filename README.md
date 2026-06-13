@@ -135,10 +135,11 @@ retroactively.
   (incoming media, replies and reactions are still received, downloaded/stored, and shown).
 - **No reactions rendering.** Reactions are received and stored but not displayed.
 - **No unread tracking.** The app never computes, stores, or displays unread counts.
-- **Read receipts off by default.** Opening a chat never notifies the sender (lurk-friendly).
-  Press `R` on the chat list to toggle read receipts on or off; the preference is saved per
-  account. Delivery/read ticks shown for *your* outbound messages still update live as the
-  recipient's device reports them regardless of this setting.
+- **Read receipts off by default (lurk-friendly).** When off, opening a chat never notifies
+  the sender. Press `R` on the chat list to toggle read receipts on or off; the preference is
+  saved per account. When on, opening a chat with unread messages sends read receipts (blue
+  ticks) for them and clears its unread badge. Delivery/read ticks shown for *your* outbound
+  messages still update live as the recipient's device reports them regardless of this setting.
 - **No search/filter** in the chat list — just the full, sorted, scrollable list.
 
 ## Development

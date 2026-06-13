@@ -21,7 +21,7 @@ export interface Chat {
   participants: GroupParticipant[];
   archived: boolean;
   lastActivity: number;
-  /** WA-server-reported unread message count. Never decremented locally (no read receipts). */
+  /** WA-server-reported unread message count; cleared to 0 locally when we send read receipts on chat open. */
   unreadCount: number;
   messages: Message[];
 }

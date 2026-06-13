@@ -544,6 +544,8 @@ export interface ChatOps {
   getMessage(jid: string, messageId: string): Promise<Message | null>;
   /** Indexed cross-chat lookup by message id (replaces the all-chats scan). */
   findMessageById(messageId: string): Promise<FoundMessage | null>;
+  /** Reset the chat's unread badge to 0 (after we send read receipts). No-op if the chat is unknown. */
+  clearUnread(jid: string): Promise<boolean>;
 }
 
 export const chatOps: ChatOps = {
@@ -756,5 +758,13 @@ export const chatOps: ChatOps = {
       chatJid: stored.chat_jid,
       message: messageFromRow(makeCtx(db), stored, stored.chat_type === "group"),
     };
+  },
+
+  async clearUnread(jid) {
+    const db = await getActiveDb();
+    const row = resolveChatRow(db, jid);
+    if (!row || row.unread_count === 0) return false;
+    db.sql.prepare("UPDATE chats SET unread_count = 0 WHERE id = ?").run(row.id);
+    return true;
   },
 };

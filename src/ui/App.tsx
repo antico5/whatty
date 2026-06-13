@@ -51,6 +51,7 @@ function Router(): ReactNode {
       openChat: (jid: string) => {
         setActiveJid(jid);
         store.refreshGroupIfNeeded(jid);
+        store.markChatRead(jid);
       },
       back: () => {
         setLastSelectedJid(activeJid);

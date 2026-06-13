@@ -173,6 +173,8 @@ export interface Connection extends EventEmitter {
   start(): Promise<void>;
   stop(): Promise<void>;
   sendText(jid: string, text: string): ReturnType<WASocket["sendMessage"]>;
+  /** Send read receipts (blue ticks) for the given inbound message keys. */
+  sendReadReceipts(keys: WAMessageKey[]): Promise<void>;
   getSocket(): WASocket | null;
 }
 
@@ -412,6 +414,12 @@ export function createConnection(options: ConnectionOptions): Connection {
   emitter.sendText = (jid, text) => {
     if (!sock) throw new Error("connection not started");
     return sock.sendMessage(jid, { text });
+  };
+
+  emitter.sendReadReceipts = (keys) => {
+    if (!sock) throw new Error("connection not started");
+    if (keys.length === 0) return Promise.resolve();
+    return sock.readMessages(keys);
   };
 
   emitter.getSocket = () => sock;
