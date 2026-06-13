@@ -18,7 +18,7 @@ import { openSqlite, type SqlDatabase } from "./sqlite.js";
  * Media blobs and the rotating log file deliberately stay on the filesystem.
  */
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 
 const SCHEMA: string[] = [
   `CREATE TABLE IF NOT EXISTS accounts (
@@ -96,6 +96,10 @@ const SCHEMA: string[] = [
     jid TEXT,
     payload TEXT
   )`,
+  `CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  )`,
 ];
 
 /** Indexes added after a schema version shipped. `SCHEMA` only runs on fresh
@@ -121,9 +125,15 @@ export interface AccountDb {
 function migrate(sql: SqlDatabase): void {
   const row = sql.prepare<{ user_version: number }>("PRAGMA user_version").get()!;
   if (row.user_version >= SCHEMA_VERSION) return;
+  if (row.user_version === 3) {
+    sql.exec("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+    sql.exec("PRAGMA user_version = 4");
+    return;
+  }
   if (row.user_version === 2) {
     sql.exec("ALTER TABLE chats ADD COLUMN unread_count INTEGER NOT NULL DEFAULT 0");
-    sql.exec("PRAGMA user_version = 3");
+    sql.exec("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+    sql.exec("PRAGMA user_version = 4");
     return;
   }
   // No migration path exists from older schemas, and we never delete chat

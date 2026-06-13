@@ -83,7 +83,9 @@ deletes its credentials (`auth/`); chat history and media are never touched.
 | --- | --- | --- | --- |
 | `↑` / `↓` | Move selection | Move chat selection | Scroll message history |
 | `Enter` | Open account / link new device | Open the selected chat | Send the draft message |
-| `Esc` | — | — | Back to the chat list |
+| `R` | — | Toggle read receipts on/off | — |
+| `H` | — | Show / hide help | — |
+| `Esc` | — | Back to account selection | Back to the chat list |
 | `Ctrl+C` | Quit the app | Quit the app | Quit the app |
 | _(typing)_ | — | — | Edits the draft input (navigation keys above still work) |
 
@@ -133,9 +135,10 @@ retroactively.
   (incoming media, replies and reactions are still received, downloaded/stored, and shown).
 - **No reactions rendering.** Reactions are received and stored but not displayed.
 - **No unread tracking.** The app never computes, stores, or displays unread counts.
-- **No read receipts sent.** Opening a chat never notifies the sender (lurk-friendly) —
-  delivery/read ticks shown for *your* outbound messages still update live as the recipient's
-  device reports them.
+- **Read receipts off by default.** Opening a chat never notifies the sender (lurk-friendly).
+  Press `R` on the chat list to toggle read receipts on or off; the preference is saved per
+  account. Delivery/read ticks shown for *your* outbound messages still update live as the
+  recipient's device reports them regardless of this setting.
 - **No search/filter** in the chat list — just the full, sorted, scrollable list.
 
 ## Development

@@ -1,6 +1,6 @@
 import { useKeyboard, useTerminalDimensions } from "@opentui/react";
 import { useEffect, useMemo, useState } from "react";
-import { useAppStore, useChats } from "../../store/StoreContext.js";
+import { useAppStore, useChats, useReadReceipts } from "../../store/StoreContext.js";
 import { useNavigation } from "../App.js";
 import { ChatListItem } from "../components/ChatListItem.js";
 import { ConfirmModal } from "../components/ConfirmModal.js";
@@ -12,16 +12,23 @@ const ROWS_PER_ENTRY = 2;
 /** Status bar (App.tsx) + hint bar = 2 fixed footer rows. */
 const FOOTER_ROWS = 2;
 
-export function ChatListScreen({ initialSelectedJid }: { initialSelectedJid?: string | null }) {
+export function ChatListScreen({
+  initialSelectedJid,
+}: {
+  initialSelectedJid?: string | null;
+}) {
   const chats = useChats();
   const navigation = useNavigation();
   const store = useAppStore();
+  const readReceipts = useReadReceipts();
   const { width: terminalWidth, height } = useTerminalDimensions();
   // Rows render inside the centered layout container, not the full terminal (see App.tsx).
   const width = layoutWidth(terminalWidth);
 
   // Tracked by jid (not index) so the highlighted row follows the same chat across re-sorts.
-  const [selectedJid, setSelectedJid] = useState<string | null>(initialSelectedJid ?? null);
+  const [selectedJid, setSelectedJid] = useState<string | null>(
+    initialSelectedJid ?? null,
+  );
   // When true the ConfirmModal is shown and the list keyboard is suppressed.
   const [confirmingExit, setConfirmingExit] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
@@ -50,6 +57,10 @@ export function ChatListScreen({ initialSelectedJid }: { initialSelectedJid?: st
       setShowHelp(true);
       return;
     }
+    if (key.name === "r" && !key.ctrl && !key.meta) {
+      store.toggleReadReceipts();
+      return;
+    }
     if (chats.length === 0) return;
     if (key.name === "up") {
       setSelectedJid(chats[Math.max(0, selectedIndex - 1)].jid);
@@ -63,27 +74,49 @@ export function ChatListScreen({ initialSelectedJid }: { initialSelectedJid?: st
   if (chats.length === 0 && !confirmingExit) {
     return (
       <box style={{ flexGrow: 1, flexDirection: "column" }}>
-        <box style={{ flexGrow: 1, alignItems: "center", justifyContent: "center" }}>
+        <box
+          style={{
+            flexGrow: 1,
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
           <text {...theme.meta}>No chats yet — still syncing…</text>
         </box>
       </box>
     );
   }
 
-  const visibleCount = Math.max(1, Math.floor((height - FOOTER_ROWS) / ROWS_PER_ENTRY));
+  const visibleCount = Math.max(
+    1,
+    Math.floor((height - FOOTER_ROWS) / ROWS_PER_ENTRY),
+  );
   const startIndex =
     chats.length <= visibleCount
       ? 0
-      : Math.min(Math.max(0, selectedIndex - Math.floor(visibleCount / 2)), chats.length - visibleCount);
+      : Math.min(
+          Math.max(0, selectedIndex - Math.floor(visibleCount / 2)),
+          chats.length - visibleCount,
+        );
   const visibleChats = chats.slice(startIndex, startIndex + visibleCount);
 
   return (
     <box style={{ flexGrow: 1, flexDirection: "column" }}>
       {visibleChats.map((chat) => (
-        <ChatListItem key={chat.jid} chat={chat} selected={chat.jid === effectiveJid} width={width} />
+        <ChatListItem
+          key={chat.jid}
+          chat={chat}
+          selected={chat.jid === effectiveJid}
+          width={width}
+        />
       ))}
       <box style={{ flexGrow: 1 }} />
-      <text {...theme.hint}>{"  Press H for help"}</text>
+      <box id="chatListScreenStatusBar">
+        <text {...theme.hint}>{`Read (R)eceipts: ${readReceipts ? "ON" : "OFF"}`}</text>
+        <text id="helpText" style={{ marginLeft: "auto" }} {...theme.hint}>
+          {"Press H for help"}
+        </text>
+      </box>
       {confirmingExit && (
         <ConfirmModal
           message="Go back to account selection?"

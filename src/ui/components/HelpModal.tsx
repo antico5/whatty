@@ -6,13 +6,7 @@ interface HelpModalProps {
 }
 
 const BINDINGS: [string, string][] = [
-  ["↑ / ↓", "navigate chat list"],
-  ["Enter", "open selected chat"],
-  ["H", "show / hide this help"],
-  ["Esc", "back to account selection"],
-  ["↑ / ↓ (chat)", "scroll messages"],
-  ["Esc (chat)", "close chat, back to list"],
-  ["Ctrl-C", "quit"],
+  ["R", "toggle read receipts"],
 ];
 
 const KEY_COL = 16;

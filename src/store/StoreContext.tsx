@@ -49,3 +49,8 @@ export function useDiskUsage(): DiskUsage | null {
   const store = useAppStore();
   return useSyncExternalStore(store.subscribe, store.getDiskUsage);
 }
+
+export function useReadReceipts(): boolean {
+  const store = useAppStore();
+  return useSyncExternalStore(store.subscribe, store.getReadReceipts);
+}

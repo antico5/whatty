@@ -11,7 +11,8 @@ import {
   loadAllChats as defaultLoadAllChats,
   loadChat as defaultLoadChat,
 } from "../persistence/chatStore.js";
-import { closeActiveDb, getActiveDb, pruneEvents } from "../persistence/db.js";
+import { closeActiveDb, getActiveDb, pruneEvents, type AccountDb } from "../persistence/db.js";
+import { getReadReceipts, setReadReceipts } from "../persistence/settings.js";
 import { getDiskUsage as defaultGetDiskUsage, type DiskUsage } from "../persistence/diskUsage.js";
 import { acquireInstanceLock, type InstanceLock } from "../persistence/instanceLock.js";
 import { setActiveAccount } from "../persistence/paths.js";
@@ -83,6 +84,8 @@ export interface AppStore {
   isReadonly(): boolean;
   sendText(jid: string, text: string): Promise<Message>;
   getDiskUsage(): DiskUsage | null;
+  getReadReceipts(): boolean;
+  toggleReadReceipts(): void;
   /** If `jid` is a group with no participants stored, fetches fresh group metadata in the background. */
   refreshGroupIfNeeded(jid: string): void;
 }
@@ -127,6 +130,8 @@ export function createAppStore(deps: Partial<AppStoreDeps> = {}): AppStore {
   let diskUsage: DiskUsage | null = null;
   let diskUsageTimer: ReturnType<typeof setInterval> | null = null;
   let instanceLock: InstanceLock | null = null;
+  let readReceipts = false;
+  let activeDb: AccountDb | null = null;
 
   function notify(): void {
     for (const listener of listeners) listener();
@@ -201,6 +206,7 @@ export function createAppStore(deps: Partial<AppStoreDeps> = {}): AppStore {
     await processor?.stop();
     processor = null;
     sender = null;
+    activeDb = null;
     closeActiveDb();
     setActiveAccount(null);
     await instanceLock?.release();
@@ -267,6 +273,9 @@ export function createAppStore(deps: Partial<AppStoreDeps> = {}): AppStore {
     } catch (err) {
       log.error({ err, accountId }, "failed to backfill message text from raw payloads");
     }
+
+    activeDb = await getActiveDb();
+    readReceipts = getReadReceipts(activeDb);
 
     chats = sortByLastActivity(await loadAllChats());
     notify();
@@ -420,6 +429,18 @@ export function createAppStore(deps: Partial<AppStoreDeps> = {}): AppStore {
     getDiskUsage(): DiskUsage | null {
       return diskUsage;
     },
+
+    getReadReceipts(): boolean {
+      return readReceipts;
+    },
+
+    toggleReadReceipts(): void {
+      if (!activeDb) return;
+      readReceipts = !readReceipts;
+      setReadReceipts(activeDb, readReceipts);
+      notify();
+    },
+
     refreshGroupIfNeeded(jid: string): void {
       const chat = chats.find((c) => c.jid === jid);
       if (!chat || chat.type !== "group" || !processor) return;
