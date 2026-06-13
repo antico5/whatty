@@ -18,8 +18,9 @@ import { getDiskUsage as defaultGetDiskUsage, type DiskUsage } from "../persiste
 import { acquireInstanceLock, type InstanceLock } from "../persistence/instanceLock.js";
 import { setActiveAccount } from "../persistence/paths.js";
 import { createFsQueue } from "../queue/fsQueue.js";
+import type { DownloadMediaPayload } from "../queue/handlers/media.js";
 import { jobHandlers } from "../queue/handlers/index.js";
-import { refreshGroupJobName } from "../queue/handlers/shared.js";
+import { mediaJobName, refreshGroupJobName } from "../queue/handlers/shared.js";
 import { createProcessor, type ProcessorApi } from "../queue/processor.js";
 import type { DataChange } from "../queue/types.js";
 import type { Chat, Message } from "../types/index.js";
@@ -91,6 +92,12 @@ export interface AppStore {
   markChatRead(jid: string): void;
   /** If `jid` is a group with no participants stored, fetches fresh group metadata in the background. */
   refreshGroupIfNeeded(jid: string): void;
+  /**
+   * Fetch the media of a message that scrolled into view but hasn't been
+   * downloaded yet (e.g. older than the eager auto-download window). No-op when
+   * the media is already linked. Bypasses the 7-day age gate.
+   */
+  downloadMediaIfNeeded(jid: string, messageId: string): void;
 }
 
 function sortByLastActivity(chats: Chat[]): Chat[] {
@@ -483,6 +490,20 @@ export function createAppStore(deps: Partial<AppStoreDeps> = {}): AppStore {
           .enqueueNamed("refresh-group-metadata", refreshGroupJobName(jid), { jid })
           .catch((err) => log.error({ err, jid }, "failed to enqueue group refresh"));
       }
+    },
+
+    downloadMediaIfNeeded(jid: string, messageId: string): void {
+      if (!processor) return;
+      const chat = chats.find((c) => c.jid === jid);
+      const message = chat?.messages.find((m) => m.id === messageId);
+      // The job handler reads the message's `raw` payload from the DB and is
+      // idempotent (no-op once `media` is linked); the deterministic name dedups
+      // repeat enqueues while a download is in flight.
+      if (!message || message.media != null) return;
+      const payload: DownloadMediaPayload = { jid, messageId, timestampMs: message.timestamp, force: true };
+      void processor
+        .enqueueNamed("download-media", mediaJobName(jid, messageId), payload)
+        .catch((err) => log.error({ err, jid, messageId }, "failed to enqueue media download"));
     },
   };
 }

@@ -22,11 +22,14 @@ import type { DataChange } from "../types.js";
 export const STATUS_BROADCAST_JID = "status@broadcast";
 
 /**
- * Only auto-download media for messages within this window. History syncs on a
- * fresh device link can span years; downloading all of that eagerly wastes disk
- * and bandwidth. Messages older than 7 days are skipped — their `media` field
- * stays `null`. WhatsApp media URLs expire within a similar window, so older
- * media would likely be unrecoverable anyway.
+ * Window for *eager* media auto-download. History syncs on a fresh device link
+ * can span years; downloading all of that eagerly wastes disk and bandwidth, so
+ * messages older than 7 days are not fetched automatically — their `media` field
+ * stays `null` and the chat view shows a "not downloaded" hint. Scrolling such a
+ * message into view triggers an on-demand download regardless of age (the
+ * `force` path in `download-media`), which is why the gate lives only on the
+ * eager path. WhatsApp media URLs expire within a similar window, so a forced
+ * fetch of very old media may still fail server-side.
  */
 export const MEDIA_AUTODOWNLOAD_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 

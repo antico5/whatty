@@ -13,6 +13,12 @@ export interface DownloadMediaPayload {
   jid: string;
   messageId: string;
   timestampMs: number;
+  /**
+   * Bypass the 7-day age gate. Set when the download is explicitly requested
+   * (e.g. the user scrolled the message into view) rather than the eager
+   * auto-download path — those requests fetch regardless of age.
+   */
+  force?: boolean;
 }
 
 /**
@@ -25,7 +31,7 @@ export interface DownloadMediaPayload {
  * linked or provably not wanted", and re-execution converges.
  */
 export const downloadMedia: JobHandler = async (payload, ctx) => {
-  const { jid, messageId, timestampMs } = payload as DownloadMediaPayload;
+  const { jid, messageId, timestampMs, force } = payload as DownloadMediaPayload;
 
   const cjid = await chatOps.resolveChatJid(jid);
   const message = await chatOps.getMessage(cjid, messageId);
@@ -39,8 +45,9 @@ export const downloadMedia: JobHandler = async (payload, ctx) => {
   if (!raw || !hasMediaContent(raw)) return { changes: [] };
 
   // Gate re-checked at execution: a long-parked or replayed job must not
-  // fetch media that has aged past the window since it was enqueued.
-  if (Date.now() - timestampMs > MEDIA_AUTODOWNLOAD_MAX_AGE_MS) {
+  // fetch media that has aged past the window since it was enqueued. Skipped
+  // for `force` requests (an explicit scroll-into-view download fetches at any age).
+  if (!force && Date.now() - timestampMs > MEDIA_AUTODOWNLOAD_MAX_AGE_MS) {
     ctx.log.debug({ jid: cjid, messageId }, "media aged past the 7-day window — skipping");
     return { changes: [] };
   }

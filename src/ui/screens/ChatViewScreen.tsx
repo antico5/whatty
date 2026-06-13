@@ -6,7 +6,7 @@ import { isPersistedEditEnvelope } from "../../whatsapp/edits.js";
 import { useNavigation } from "../App.js";
 import { ChatHeader } from "../components/ChatHeader.js";
 import { DraftInput } from "../components/DraftInput.js";
-import { MessageItem, messageRowCount } from "../components/MessageItem.js";
+import { MEDIA_MESSAGE_TYPES, MessageItem, messageRowCount } from "../components/MessageItem.js";
 import { layoutWidth } from "../layout.js";
 import { theme } from "../theme.js";
 
@@ -83,6 +83,30 @@ export function ChatViewScreen({ jid }: ChatViewScreenProps) {
     }
   });
 
+  // Header: title row + optional "last seen" row + separator rule.
+  const headerRows = chat && chat.lastActivity > 0 ? 3 : 2;
+  const indicatorRows = hasNewMessages ? 1 : 0;
+  const messageAreaHeight = Math.max(1, height - headerRows - indicatorRows - 1 /* spacer */ - 1 /* draft input */);
+
+  const { startIndex, endIndex } = chat
+    ? computeWindow(messages, bottomIndex, messageAreaHeight, chat, width)
+    : { startIndex: 0, endIndex: -1 };
+  const visibleMessages = endIndex >= startIndex ? messages.slice(startIndex, endIndex + 1) : [];
+
+  // Auto-download media for messages scrolled into view but not yet fetched
+  // (e.g. older than the eager 7-day window). Keyed on the set of still-missing
+  // media ids, so the effect fires only when that set changes and stops
+  // re-firing for each id once its download lands and clears `media` on reload.
+  const pendingMediaIds = visibleMessages
+    .filter((m) => m.media == null && MEDIA_MESSAGE_TYPES.has(m.type))
+    .map((m) => m.id);
+  const pendingMediaKey = pendingMediaIds.join(",");
+  useEffect(() => {
+    for (const id of pendingMediaIds) store.downloadMediaIfNeeded(jid, id);
+    // pendingMediaIds is derived from pendingMediaKey; jid and store are stable.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jid, pendingMediaKey]);
+
   if (chat === null) {
     return (
       <box style={{ flexGrow: 1, alignItems: "center", justifyContent: "center" }}>
@@ -96,14 +120,6 @@ export function ChatViewScreen({ jid }: ChatViewScreenProps) {
     setHasNewMessages(false);
     await store.sendText(jid, text);
   }
-
-  // Header: title row + optional "last seen" row + separator rule.
-  const headerRows = chat.lastActivity > 0 ? 3 : 2;
-  const indicatorRows = hasNewMessages ? 1 : 0;
-  const messageAreaHeight = Math.max(1, height - headerRows - indicatorRows - 1 /* spacer */ - 1 /* draft input */);
-
-  const { startIndex, endIndex } = computeWindow(messages, bottomIndex, messageAreaHeight, chat, width);
-  const visibleMessages = endIndex >= startIndex ? messages.slice(startIndex, endIndex + 1) : [];
 
   return (
     <box style={{ flexGrow: 1, flexDirection: "column" }}>

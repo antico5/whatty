@@ -94,14 +94,21 @@ deletes its credentials (`auth/`); chat history and media are never touched.
 Linking a device makes the phone upload its full message history, and the app now ingests
 **all** of it — including the deep-history (`FULL`) chunks that earlier builds silently
 discarded — so old conversations are browsable after a fresh link. Media older than the
-auto-download window (below) is still listed but not fetched.
+eager auto-download window (below) is listed with a "not downloaded" hint and fetched
+on demand when you scroll the message into view.
 
-## Media auto-download
+## Media download
 
-Media attached to messages is downloaded automatically — but only for messages received
-within the **last 7 days**. Older messages (e.g. from a fresh history sync on a newly
-linked device) are skipped; their entry in the chat view shows a `[type — not downloaded]`
-hint instead of a file path.
+Media attached to messages is downloaded **eagerly** for messages received within the
+**last 7 days** — these land in the background shortly after the message arrives. Older
+messages (e.g. from a fresh history sync on a newly linked device) aren't fetched up
+front; their entry in the chat view shows a `[type — not downloaded]` hint instead of a
+file path.
+
+**Scrolling such a message into view downloads its media on demand**, regardless of age.
+The fetch runs in the background and the entry switches from the hint to a file link when
+it lands — no key to press. Re-scrolling a message whose download previously failed
+retries it.
 
 Downloaded media is shown as a plain-text `file://` URL pointing at a short symlink
 (`<tmpdir>/wt/<hash>.<ext>`, e.g. `/tmp/wt/ab12cd34.jpg`) so the line stays compact —
@@ -109,16 +116,16 @@ most terminals let you open or copy it directly. Symlinks are created on the fly
 messages scroll into view; the temp directory is volatile (cleared on reboot), but links
 are recreated automatically the next time the message is displayed.
 
-Messages always appear immediately; their media is fetched in the background and the view
-updates when it lands. Downloads survive restarts: an interrupted or failed download is
-retried (with backoff) from the durable queue, and on every start the app sweeps recent
-messages with missing media and re-fetches them.
+Downloads survive restarts: an interrupted or failed download is retried (with backoff)
+from the durable queue, and on every start the app sweeps recent messages with missing
+media and re-fetches them.
 
-**Re-fetchability caveat:** WhatsApp media URLs expire within roughly the same 7-day window.
-Messages skipped by the auto-download gate may be permanently unrecoverable, even if you
-could trigger a manual download later — the server-side URL will likely have expired by the
-time a fresh device link completes its history sync. This is by design: the cutoff exists
-precisely to avoid pulling years of unreachable media.
+**Re-fetchability caveat:** WhatsApp media URLs expire within roughly the same 7-day
+window. An on-demand fetch of much older media can still fail server-side if the URL has
+expired and the original sender's device is unreachable for a re-upload — in that case
+the entry keeps showing the "not downloaded" hint. The eager window stays small to avoid
+pulling years of media up front; on-demand fetching only pays the cost for what you
+actually look at.
 
 ## Business & interactive messages
 

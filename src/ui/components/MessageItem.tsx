@@ -14,6 +14,21 @@ import {
 } from "../util/format.js";
 import { ensureTmpLink } from "../util/tmpMediaLink.js";
 
+/**
+ * Message types that carry downloadable media — the ones that render a file
+ * link when `media` is set, or a "not downloaded" hint when it isn't. Shared
+ * with the chat view, which uses it to trigger on-demand downloads as these
+ * messages scroll into view.
+ */
+export const MEDIA_MESSAGE_TYPES: ReadonlySet<Message["type"]> = new Set([
+  "image",
+  "video",
+  "audio",
+  "document",
+  "sticker",
+  "viewOnce",
+]);
+
 export interface MessageItemProps {
   message: Message;
   chat: Chat;
@@ -66,9 +81,9 @@ function layoutLines(message: Message, chat: Chat, maxWidth: number): LineData[]
     }
   } else {
     // No downloaded media — show the type label as a hint when the message type
-    // indicates there should be media (e.g. skipped by the 7-day auto-download gate).
-    const MEDIA_TYPES = new Set<string>(["image", "video", "audio", "document", "sticker", "viewOnce"]);
-    if (MEDIA_TYPES.has(message.type)) {
+    // indicates there should be media (e.g. skipped by the 7-day auto-download gate,
+    // or not yet fetched; the chat view kicks off a download as it scrolls into view).
+    if (MEDIA_MESSAGE_TYPES.has(message.type)) {
       const typeLabel = mediaTypeLabel(message.type);
       // View-once bytes are never delivered to a passive client, so "not
       // downloaded" would mislead — the bare `[view once]` label is the truth.
