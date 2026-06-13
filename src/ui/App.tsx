@@ -96,7 +96,9 @@ export interface AppProps {
 
 export function App({ store, onQuit }: AppProps) {
   useKeyboard((key) => {
-    if (key.ctrl && key.name === "c") onQuit();
+    // Ctrl+C is deliberately *not* handled: it's left to the terminal (e.g. copy
+    // in tilix). Ctrl+D is the app's quit key instead.
+    if (key.ctrl && key.name === "d") onQuit();
   });
 
   return (

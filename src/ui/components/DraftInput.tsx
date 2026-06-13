@@ -1,5 +1,6 @@
-import { useKeyboard } from "@opentui/react";
-import { useState } from "react";
+import { decodePasteBytes, type PasteEvent } from "@opentui/core";
+import { useAppContext, useKeyboard } from "@opentui/react";
+import { useEffect, useState } from "react";
 import { theme } from "../theme.js";
 
 export interface DraftInputProps {
@@ -17,6 +18,21 @@ const READONLY_PLACEHOLDER = "read-only mode";
  */
 export function DraftInput({ onSubmit, readonly = false }: DraftInputProps) {
   const [draft, setDraft] = useState("");
+  const { keyHandler } = useAppContext();
+
+  // Bracketed paste: the terminal delivers clipboard content as a dedicated
+  // `paste` event (whatever key the terminal binds to paste — Ctrl+Shift+V,
+  // middle-click, etc.), not as keystrokes. Flatten newlines to spaces since
+  // the draft is single-line.
+  useEffect(() => {
+    if (readonly || !keyHandler) return;
+    const onPaste = (event: PasteEvent) => {
+      const text = decodePasteBytes(event.bytes).replace(/\r?\n/g, " ");
+      if (text) setDraft((current) => current + text);
+    };
+    keyHandler.on("paste", onPaste);
+    return () => void keyHandler.off("paste", onPaste);
+  }, [keyHandler, readonly]);
 
   useKeyboard((key) => {
     if (readonly) return;

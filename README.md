@@ -86,8 +86,14 @@ deletes its credentials (`auth/`); chat history and media are never touched.
 | `R` | — | Toggle read receipts on/off | — |
 | `H` | — | Show / hide help | — |
 | `Esc` | — | Back to account selection | Back to the chat list |
-| `Ctrl+C` | Quit the app | Quit the app | Quit the app |
+| `Ctrl+D` | Quit the app | Quit the app | Quit the app |
+| _Paste_ | — | — | Inserts clipboard text into the draft (single line) |
 | _(typing)_ | — | — | Edits the draft input (navigation keys above still work) |
+
+`Ctrl+C` is intentionally left to the terminal (e.g. to copy a selection) — use
+`Ctrl+D` to quit. Paste uses your terminal's normal paste action (Ctrl+Shift+V,
+middle-click, or whatever you've bound it to), delivered via bracketed paste;
+newlines are flattened to spaces.
 
 ## History sync
 

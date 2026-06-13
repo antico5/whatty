@@ -9,7 +9,7 @@ async function main(): Promise<void> {
   let renderer: CliRenderer | null = null;
   let shuttingDown = false;
 
-  /** Flush pending saves, stop the socket, destroy the renderer, exit — shared by Ctrl+C, SIGINT and SIGTERM. */
+  /** Flush pending saves, stop the socket, destroy the renderer, exit — shared by Ctrl+D, SIGINT and SIGTERM. */
   async function shutdown(): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;

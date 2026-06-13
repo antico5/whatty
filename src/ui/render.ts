@@ -6,9 +6,10 @@ import { App } from "./App.js";
 
 /**
  * Boots the full-screen (alternate-screen) terminal renderer and mounts the
- * React app tree onto it. `Ctrl+C` is handled by `App` itself — via `onQuit`,
- * the same graceful-shutdown sequence used for `SIGINT`/`SIGTERM` — so the
- * renderer must not also act on it.
+ * React app tree onto it. Quit is `Ctrl+D`, handled by `App` itself — via
+ * `onQuit`, the same graceful-shutdown sequence used for `SIGINT`/`SIGTERM`.
+ * `Ctrl+C` is intentionally left to the terminal (so it can copy), so the
+ * renderer must not exit on it either.
  */
 export async function startUI(store: AppStore, onQuit: () => void): Promise<CliRenderer> {
   const renderer = await createCliRenderer({ screenMode: "alternate-screen", exitOnCtrlC: false });
