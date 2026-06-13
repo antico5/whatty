@@ -108,9 +108,10 @@ or how the README should change, ask before finishing.
 - WhatsApp 405s stale WA Web versions — always call `fetchLatestBaileysVersion()`
   before creating the socket.
 - Message ids are only unique **per sender** (not globally unique per chat).
-- OSC 8 hyperlinks for media use `@opentui`'s `<a href>` element; the env var
-  `WA_CHAT_HYPERLINKS=1/0` forces the feature on/off (see `src/ui/util/termCaps.ts`).
-  Default is **off** for unknown terminals to avoid garbled escapes.
+- Media is rendered as a plain-text `file://` URL pointing at a short symlink under
+  `<os.tmpdir()>/wt/` (`src/ui/util/tmpMediaLink.ts`), created lazily from
+  `layoutLines` as messages scroll into view. The link path is a pure function of
+  the media path (md5 suffix), so row-count math never depends on the fs side effect.
 
 ## Debugging
 

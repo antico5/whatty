@@ -101,6 +101,12 @@ within the **last 7 days**. Older messages (e.g. from a fresh history sync on a 
 linked device) are skipped; their entry in the chat view shows a `[type — not downloaded]`
 hint instead of a file path.
 
+Downloaded media is shown as a plain-text `file://` URL pointing at a short symlink
+(`<tmpdir>/wt/<hash>.<ext>`, e.g. `/tmp/wt/ab12cd34.jpg`) so the line stays compact —
+most terminals let you open or copy it directly. Symlinks are created on the fly as
+messages scroll into view; the temp directory is volatile (cleared on reboot), but links
+are recreated automatically the next time the message is displayed.
+
 Messages always appear immediately; their media is fetched in the background and the view
 updates when it lands. Downloads survive restarts: an interrupted or failed download is
 retried (with backoff) from the durable queue, and on every start the app sweeps recent

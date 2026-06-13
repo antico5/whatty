@@ -12,7 +12,7 @@ import {
   wrapText,
   type MessageTicks,
 } from "../util/format.js";
-import { supportsHyperlinks } from "../util/termCaps.js";
+import { ensureTmpLink } from "../util/tmpMediaLink.js";
 
 export interface MessageItemProps {
   message: Message;
@@ -24,13 +24,7 @@ export interface MessageItemProps {
 type LineData =
   | { kind: "sender"; text: string; style: TextStyle }
   | { kind: "quoted"; text: string }
-  /**
-   * OSC 8 hyperlink variant: `label` is the printable text (used for width
-   * math), `href` is the file:// URL passed to the `<a>` element. Only emitted
-   * when the terminal is known to support hyperlinks (`supportsHyperlinks()`).
-   */
-  | { kind: "media-link"; label: string; href: string }
-  /** Fallback: absolute path, chunked to maxWidth so row counting is exact. */
+  /** file:// URL of the tmp symlink, chunked to maxWidth so row counting is exact. */
   | { kind: "media"; text: string }
   | { kind: "text"; text: string }
   | { kind: "meta"; time: string; deleted: boolean; edited: boolean; ticks: MessageTicks | null; reactions: string };
@@ -60,22 +54,12 @@ function layoutLines(message: Message, chat: Chat, maxWidth: number): LineData[]
   if (message.media) {
     const absPath = absoluteMediaPath(message.media);
     const typeLabel = mediaTypeLabel(message.type);
-    if (supportsHyperlinks()) {
-      // OSC 8 mode: one line with a short descriptive label. The `<a href>` element
-      // carries the file:// URL; the rendered text is just the label, so width math
-      // only counts the printable label characters — no chunking needed.
-      const fileName = message.media.fileName ?? null;
-      const linkLabel = fileName ? truncate(`${typeLabel} ${fileName}`, maxWidth) : `${typeLabel} open`;
-      const href = `file://${absPath}`;
-      lines.push({ kind: "media-link", label: linkLabel, href });
-    } else {
-      // Fallback: show the absolute path (not a file:// URL, per spec). Pre-chunk at
-      // maxWidth so the row count always equals the rendered rows (same logic as before,
-      // but using absPath instead of a file:// URL to avoid the redundant "file://" prefix).
-      const media = `${typeLabel} ${absPath}`;
-      for (let i = 0; i < media.length; i += maxWidth) {
-        lines.push({ kind: "media", text: media.slice(i, i + maxWidth) });
-      }
+    // Plain-text file:// URL pointing at a short tmp symlink (created lazily here,
+    // i.e. only for messages that actually scroll into view). The label text is a
+    // pure function of absPath, so row counting stays deterministic either way.
+    const media = `${typeLabel} file://${ensureTmpLink(absPath)}`;
+    for (let i = 0; i < media.length; i += maxWidth) {
+      lines.push({ kind: "media", text: media.slice(i, i + maxWidth) });
     }
     if (resolvedText) {
       for (const line of wrapText(resolvedText, maxWidth)) lines.push({ kind: "text", text: line });
@@ -130,12 +114,6 @@ function renderLine(line: LineData, key: string): ReactNode {
       return (
         <text key={key} {...theme.meta}>
           {line.text}
-        </text>
-      );
-    case "media-link":
-      return (
-        <text key={key} {...theme.mediaLink}>
-          <a href={line.href}>{line.label}</a>
         </text>
       );
     case "media":
