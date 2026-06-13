@@ -111,7 +111,7 @@ export function ChatListScreen({
         />
       ))}
       <box style={{ flexGrow: 1 }} />
-      <box id="chatListScreenStatusBar">
+      <box id="chatListScreenStatusBar" style={{ flexDirection: "row" }}>
         <text {...theme.hint}>{`Read (R)eceipts: ${readReceipts ? "ON" : "OFF"}`}</text>
         <text id="helpText" style={{ marginLeft: "auto" }} {...theme.hint}>
           {"Press H for help"}
