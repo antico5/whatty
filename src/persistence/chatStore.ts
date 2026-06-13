@@ -56,6 +56,7 @@ interface ChatRow {
   group_subject: string | null;
   archived: number;
   last_activity: number;
+  unread_count: number;
 }
 
 interface MessageRow {
@@ -241,6 +242,7 @@ function chatFromRow(ctx: LoadCtx, row: ChatRow, participants: GroupParticipant[
     participants,
     archived: row.archived !== 0,
     lastActivity: row.last_activity,
+    unreadCount: row.unread_count,
     messages,
   };
 }
@@ -408,8 +410,8 @@ function upsertMessageRow(db: AccountDb, chatId: number, m: Message): void {
 function writeChatRow(db: AccountDb, chat: Chat): number {
   const row = ensureChatRow(db, chat.jid);
   db.sql
-    .prepare("UPDATE chats SET group_subject = ?, archived = ?, last_activity = ? WHERE id = ?")
-    .run(chat.groupSubject, chat.archived, chat.lastActivity, row.id);
+    .prepare("UPDATE chats SET group_subject = ?, archived = ?, last_activity = ?, unread_count = ? WHERE id = ?")
+    .run(chat.groupSubject, chat.archived, chat.lastActivity, chat.unreadCount, row.id);
   db.sql.prepare("DELETE FROM participants WHERE chat_id = ?").run(row.id);
   const insert = db.sql.prepare(
     "INSERT OR REPLACE INTO participants (chat_id, account_id, is_admin) VALUES (?, ?, ?)",

@@ -18,7 +18,7 @@ import { openSqlite, type SqlDatabase } from "./sqlite.js";
  * Media blobs and the rotating log file deliberately stay on the filesystem.
  */
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 const SCHEMA: string[] = [
   `CREATE TABLE IF NOT EXISTS accounts (
@@ -43,7 +43,8 @@ const SCHEMA: string[] = [
     peer_account_id INTEGER REFERENCES accounts(id),
     group_subject TEXT,
     archived INTEGER NOT NULL DEFAULT 0,
-    last_activity INTEGER NOT NULL DEFAULT 0
+    last_activity INTEGER NOT NULL DEFAULT 0,
+    unread_count INTEGER NOT NULL DEFAULT 0
   )`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_chats_peer
      ON chats(peer_account_id) WHERE peer_account_id IS NOT NULL`,
@@ -120,6 +121,11 @@ export interface AccountDb {
 function migrate(sql: SqlDatabase): void {
   const row = sql.prepare<{ user_version: number }>("PRAGMA user_version").get()!;
   if (row.user_version >= SCHEMA_VERSION) return;
+  if (row.user_version === 2) {
+    sql.exec("ALTER TABLE chats ADD COLUMN unread_count INTEGER NOT NULL DEFAULT 0");
+    sql.exec("PRAGMA user_version = 3");
+    return;
+  }
   // No migration path exists from older schemas, and we never delete chat
   // data ourselves — the user must wipe the data dir and re-link the device.
   if (row.user_version > 0) {

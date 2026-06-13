@@ -21,6 +21,8 @@ export interface Chat {
   participants: GroupParticipant[];
   archived: boolean;
   lastActivity: number;
+  /** WA-server-reported unread message count. Never decremented locally (no read receipts). */
+  unreadCount: number;
   messages: Message[];
 }
 
@@ -34,6 +36,7 @@ export function createEmptyChat(jid: string, type: ChatType): Chat {
     participants: [],
     archived: false,
     lastActivity: 0,
+    unreadCount: 0,
     messages: [],
   };
 }

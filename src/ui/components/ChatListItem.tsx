@@ -56,12 +56,14 @@ export function ChatListItem({ chat, selected, width }: ChatListItemProps) {
   const subtitle = chatSubtitle(chat);
   const timestamp = formatListTimestamp(chat.lastActivity);
   const archivedMarker = chat.archived ? " ⊟ archived" : "";
+  const unreadBadge = chat.unreadCount > 0 ? ` (${chat.unreadCount})` : "";
+  const hasUnread = chat.unreadCount > 0;
 
   // -1 for the accent-bar column, -1 of slack so a fully-packed row never sits
   // flush against the terminal's right edge (which otherwise wraps and leaves
   // a stray blank line behind).
   const contentWidth = Math.max(1, width - 2);
-  const headerLeft = `${name}${subtitle ? ` ${subtitle}` : ""}${archivedMarker}`;
+  const headerLeft = `${name}${unreadBadge}${subtitle ? ` ${subtitle}` : ""}${archivedMarker}`;
   const headerGap = " ".repeat(Math.max(1, contentWidth - headerLeft.length - timestamp.length));
 
   const preview = lastMessagePreview(chat);
@@ -82,10 +84,11 @@ export function ChatListItem({ chat, selected, width }: ChatListItemProps) {
       <box style={{ flexDirection: "column", flexGrow: 1 }}>
         <box style={{ flexDirection: "row" }}>
           <text {...rowStyle(NAME_STYLE, selected)}>{name}</text>
+          {unreadBadge ? <text {...rowStyle(theme.accent, selected)}>{unreadBadge}</text> : null}
           {subtitle ? <text {...rowStyle(theme.meta, selected)}>{` ${subtitle}`}</text> : null}
           {archivedMarker ? <text {...rowStyle(theme.meta, selected)}>{archivedMarker}</text> : null}
           <text {...rowStyle(theme.meta, selected)}>{headerGap}</text>
-          <text {...rowStyle(theme.meta, selected)}>{timestamp}</text>
+          <text {...rowStyle(hasUnread ? theme.accent : theme.meta, selected)}>{timestamp}</text>
         </box>
         <box style={{ flexDirection: "row" }}>
           {indicator ? <text {...rowStyle(indicator.style, selected)}>{`${indicator.symbol} `}</text> : null}

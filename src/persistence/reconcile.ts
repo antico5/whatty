@@ -94,6 +94,7 @@ export function mergeChatMeta(local: Chat | null, incoming: Partial<Chat>): Chat
     groupSubject: incoming.groupSubject ?? base.groupSubject,
     participants: mergeParticipants(base.participants, incoming.participants),
     archived: incoming.archived ?? base.archived,
+    unreadCount: incoming.unreadCount ?? base.unreadCount,
   };
 
   merged.lastActivity = Math.max(

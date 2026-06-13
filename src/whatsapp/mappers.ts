@@ -415,6 +415,12 @@ export function mapChat(waChat: Partial<BaileysChat>): Partial<Chat> {
   );
   if (lastActivity > 0) partial.lastActivity = lastActivity;
 
+  // null means "mark as read on another device" → treat as 0; negative is WA's
+  // "mark as unread" flag which we don't track → clamp to 0.
+  if (waChat.unreadCount !== undefined) {
+    partial.unreadCount = Math.max(0, waChat.unreadCount ?? 0);
+  }
+
   return partial;
 }
 
