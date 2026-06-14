@@ -45,7 +45,7 @@ async function main(): Promise<void> {
   let renderer: CliRenderer | null = null;
   let shuttingDown = false;
 
-  /** Flush pending saves, stop the socket, destroy the renderer, exit — shared by Ctrl+D, SIGINT and SIGTERM. */
+  /** Flush pending saves, stop the socket, destroy the renderer, exit — shared by Ctrl+D, SIGINT, SIGTERM and SIGHUP. */
   async function shutdown(): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
@@ -84,6 +84,10 @@ async function main(): Promise<void> {
   process.on("unhandledRejection", (reason) => crash("unhandledRejection", reason));
   process.on("SIGINT", () => void shutdown());
   process.on("SIGTERM", () => void shutdown());
+  // SIGHUP fires when the controlling terminal (e.g. a Tilix tab) is closed.
+  // Without this the process is orphaned, reparented to init, and keeps holding
+  // the per-account instance lock — blocking the next launch from connecting.
+  process.on("SIGHUP", () => void shutdown());
 
   const store = createAppStore({ readonly: process.argv.includes("--readonly") });
   await store.init();
