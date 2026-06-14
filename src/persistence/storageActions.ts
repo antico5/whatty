@@ -11,7 +11,7 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
-import { accountDir, accountsRootDir, logFilePath } from "./paths.js";
+import { accountDir, accountsRootDir, logFilePath, queueLogFilePath } from "./paths.js";
 
 /**
  * Truncate the log file to zero bytes.
@@ -33,6 +33,15 @@ export async function clearLogsDestructive(): Promise<void> {
     await fs.truncate(`${logFile}.1`, 0);
   } catch {
     // absent — fine
+  }
+  // Truncate the queue processor log and its rotation.
+  const queueLog = queueLogFilePath();
+  for (const p of [queueLog, `${queueLog}.1`]) {
+    try {
+      await fs.truncate(p, 0);
+    } catch {
+      // absent — fine
+    }
   }
 }
 

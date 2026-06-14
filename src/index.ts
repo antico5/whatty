@@ -3,6 +3,43 @@ import { getLogger } from "./logger.js";
 import { createAppStore } from "./store/appStore.js";
 import { startUI } from "./ui/render.js";
 
+// ---------------------------------------------------------------------------
+// CLI argument parsing — runs before any TUI initialisation.
+// ---------------------------------------------------------------------------
+
+const VERSION = "0.1.0";
+
+const HELP = `\
+Usage: whatty [options]
+
+Options:
+  --readonly   Open in read-only mode (no sends, no writes to the database)
+  --version    Print version and exit
+  --help       Show this help message and exit
+`;
+
+const args = process.argv.slice(2);
+const knownFlags = new Set(["--readonly", "--version", "--help"]);
+
+for (const arg of args) {
+  if (!knownFlags.has(arg)) {
+    process.stderr.write(`whatty: unknown option: ${arg}\nRun 'whatty --help' for usage.\n`);
+    process.exit(1);
+  }
+}
+
+if (args.includes("--version")) {
+  process.stdout.write(`whatty ${VERSION}\n`);
+  process.exit(0);
+}
+
+if (args.includes("--help")) {
+  process.stdout.write(HELP);
+  process.exit(0);
+}
+
+// ---------------------------------------------------------------------------
+
 const log = getLogger().child({ module: "main" });
 
 async function main(): Promise<void> {
