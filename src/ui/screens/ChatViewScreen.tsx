@@ -203,17 +203,20 @@ export function ChatViewScreen({ jid }: ChatViewScreenProps) {
     }
   });
 
-  // The visible rows: while searching, a window over the matching messages anchored on the
+  // The visible rows: while searching, a window over the matching messages centred on the
   // selected match (highlighted); otherwise the normal window anchored at `bottomIndex`.
   const renderRows: { message: Message; key: string; selected: boolean }[] = [];
   if (chat) {
     if (searching) {
       const filtered = matchIndices.map((i) => messages[i]);
-      const anchorPos = effectiveIdx >= 0 ? matchIndices.indexOf(effectiveIdx) : filtered.length - 1;
-      const { startIndex, endIndex } = computeWindow(filtered, Math.max(0, anchorPos), messageAreaHeight, chat, width);
-      for (let p = startIndex; p <= endIndex; p++) {
-        const gi = matchIndices[p];
-        renderRows.push({ message: messages[gi], key: String(gi), selected: gi === effectiveIdx });
+      if (filtered.length > 0) {
+        const anchorPos = effectiveIdx >= 0 ? matchIndices.indexOf(effectiveIdx) : filtered.length - 1;
+        const bottom = centeredBottom(filtered, anchorPos, messageAreaHeight, chat, width);
+        const { startIndex, endIndex } = computeWindow(filtered, bottom, messageAreaHeight, chat, width);
+        for (let p = startIndex; p <= endIndex; p++) {
+          const gi = matchIndices[p];
+          renderRows.push({ message: messages[gi], key: String(gi), selected: gi === effectiveIdx });
+        }
       }
     } else {
       const { startIndex, endIndex } = computeWindow(messages, bottomIndex, messageAreaHeight, chat, width);
