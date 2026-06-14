@@ -90,7 +90,8 @@ export function ChatListScreen({
     if (showHelp) return;
 
     // While the search box is focused it owns the keyboard: printable keys append to the
-    // query (so R/H type literally instead of firing) and ↑/↓ are gated until Enter.
+    // query (so R/H type literally instead of firing). Arrow keys settle the search first
+    // (commit + navigate in one keystroke) by falling through to the navigation logic below.
     if (writingSearchQuery) {
       if (key.name === "escape") {
         // Cancel: drop the query and the box together, back to the unfiltered list.
@@ -107,13 +108,20 @@ export function ChatListScreen({
         setQuery((current) => current.slice(0, -1));
         return;
       }
-      // Navigation keys and modified combos aren't typed (Ctrl+C/D stay global, in App).
-      if (key.ctrl || key.meta || key.name === "up" || key.name === "down") return;
-      const sequence = key.sequence;
-      if (sequence && sequence.charCodeAt(0) >= 0x20) {
-        setQuery((current) => current + sequence);
+      // Arrow keys: commit the search then fall through to navigate the filtered list.
+      if (key.name === "up" || key.name === "down") {
+        setWritingSearchQuery(false);
+        // (falls through to navigation block below)
+      } else {
+        // All other keys: type printable chars, ignore modified combos.
+        if (!key.ctrl && !key.meta) {
+          const sequence = key.sequence;
+          if (sequence && sequence.charCodeAt(0) >= 0x20) {
+            setQuery((current) => current + sequence);
+          }
+        }
+        return;
       }
-      return;
     }
 
     // Space opens the search box, keeping any committed query for re-editing.
