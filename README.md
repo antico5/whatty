@@ -85,7 +85,7 @@ deletes its credentials (`auth/`); chat history and media are never touched.
 | `Enter` | Open account / link new device | Open the selected chat | Send the draft message |
 | `R` | — | Toggle read receipts on/off | — |
 | `H` | — | Show / hide help | — |
-| `Space` | — | Search chats by name or number | — |
+| `Ctrl+F` / `Space` | — | Search chats by name or number | — |
 | `Esc` | — | Clear an active search, else back to account selection | Back to the chat list |
 | `Ctrl+C` | Copy the selection | Copy the selection | Copy the selection |
 | `Ctrl+D` | Quit the app | Quit the app | Quit the app |
@@ -103,7 +103,7 @@ it, hold `Shift` while dragging to make a native selection. `Ctrl+D` quits. Past
 your terminal's normal paste action (Ctrl+Shift+V, middle-click, or whatever you've bound
 it to), delivered via bracketed paste; newlines are flattened to spaces.
 
-**Searching the chat list.** Press `Space` on the chat list to open a `Search:` bar above
+**Searching the chat list.** Press `Ctrl+F` (or `Space`) on the chat list to open a `Search:` bar above
 the read-receipts line. Type to filter the list live — the match is case-insensitive and
 partial, against both the chat name and (for individual chats) the phone number. Press
 `Enter` to keep the filter and hand focus back to the list, where `↑`/`↓`, `R`, `H` and

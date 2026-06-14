@@ -124,8 +124,8 @@ export function ChatListScreen({
       }
     }
 
-    // Space opens the search box, keeping any committed query for re-editing.
-    if (key.name === "space" && !key.ctrl && !key.meta) {
+    // Space or Ctrl+F opens the search box, keeping any committed query for re-editing.
+    if ((key.name === "space" && !key.ctrl && !key.meta) || (key.name === "f" && key.ctrl)) {
       if (chats.length > 0) setWritingSearchQuery(true);
       return;
     }
