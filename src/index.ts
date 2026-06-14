@@ -2,12 +2,11 @@ import type { CliRenderer } from "@opentui/core";
 import { getLogger } from "./logger.js";
 import { createAppStore } from "./store/appStore.js";
 import { startUI } from "./ui/render.js";
+import { getAppVersion } from "./version.js";
 
 // ---------------------------------------------------------------------------
 // CLI argument parsing — runs before any TUI initialisation.
 // ---------------------------------------------------------------------------
-
-const VERSION = "0.1.0";
 
 const HELP = `\
 Usage: whatty [options]
@@ -29,7 +28,7 @@ for (const arg of args) {
 }
 
 if (args.includes("--version")) {
-  process.stdout.write(`whatty ${VERSION}\n`);
+  process.stdout.write(`whatty ${getAppVersion()}\n`);
   process.exit(0);
 }
 

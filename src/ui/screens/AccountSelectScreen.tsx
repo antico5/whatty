@@ -10,6 +10,7 @@ import {
   clearLogsDestructive,
 } from "../../persistence/storageActions.js";
 import { useAccounts, useAppStore } from "../../store/StoreContext.js";
+import { checkForUpdate } from "../../updateCheck.js";
 import { getLogger } from "../../whatsapp/logger.js";
 import { ConfirmModal } from "../components/ConfirmModal.js";
 import { theme } from "../theme.js";
@@ -298,6 +299,20 @@ export function AccountSelectScreen() {
   const accounts = useAccounts();
   const [menu, setMenu] = useState<Menu>("accounts");
   const [selectedIndex, setSelectedIndex] = useState(0);
+  // Latest whatty version on npm, when an upgrade is available. Checked once on
+  // mount; resolves to null while in flight, offline, or already up to date, so
+  // the selector renders immediately and the notice just appears if/when found.
+  const [updateVersion, setUpdateVersion] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    void checkForUpdate().then((latest) => {
+      if (active) setUpdateVersion(latest);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   // Entries: accounts…, "Link new device", separator (non-selectable), "Config"
   // Selectable indices: 0..accounts.length (Link new device) + 1 (Config)
@@ -406,6 +421,13 @@ export function AccountSelectScreen() {
       <box style={{ marginTop: 1 }}>
         <text {...theme.meta}>↑/↓ to choose, Enter to open</text>
       </box>
+      {updateVersion && (
+        <box style={{ marginTop: 1 }}>
+          <text {...theme.hint}>
+            {`↑ whatty v${updateVersion} available — update: npm i -g whatty@latest`}
+          </text>
+        </box>
+      )}
     </box>
   );
 }

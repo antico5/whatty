@@ -35,6 +35,11 @@ A boot-time account selector is shown. Use `↑`/`↓` to navigate and `Enter` t
 account. The last entry is always **Link new device**, which starts a fresh QR pairing flow
 and adds the new account to the list.
 
+On launch the selector also checks npm for a newer release. If one is available it shows an
+`↑ whatty vX.Y.Z available — update: npm i -g whatty@latest` notice. The check runs fresh on
+every start (no caching), is best-effort, and is silently skipped when offline so it never
+delays startup.
+
 ### Session expiry / unlinking
 
 If a device is removed from your phone, the app detects the dead session and removes that
