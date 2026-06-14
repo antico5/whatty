@@ -81,12 +81,13 @@ deletes its credentials (`auth/`); chat history and media are never touched.
 
 | Key | Account selector | Chat list | Chat view |
 | --- | --- | --- | --- |
-| `↑` / `↓` | Move selection | Move chat selection | Scroll message history |
-| `Enter` | Open account / link new device | Open the selected chat | Send the draft message |
+| `↑` / `↓` | Move selection | Move chat selection | Scroll history (step matches while searching) |
+| `Enter` | Open account / link new device | Open the selected chat | Send the draft (jump to the match while searching) |
 | `R` | — | Toggle read receipts on/off | — |
 | `H` | — | Show / hide help | — |
-| `Ctrl+F` / `Space` | — | Search chats by name or number | — |
-| `Esc` | — | Clear an active search, else back to account selection | Back to the chat list |
+| `Ctrl+F` / `Space` | — | Search chats by name or number | `Ctrl+F`: search messages |
+| `End` | — | — | Jump to the latest message |
+| `Esc` | — | Clear an active search, else back to account selection | Clear an active search, else back to the chat list |
 | `Ctrl+C` | Copy the selection | Copy the selection | Copy the selection |
 | `Ctrl+D` | Quit the app | Quit the app | Quit the app |
 | _Paste_ | — | — | Inserts clipboard text into the draft (single line) |
@@ -110,6 +111,15 @@ partial, against both the chat name and (for individual chats) the phone number.
 `Enter` work as usual on the matches. Press `Esc` to clear the search (a second `Esc`, with
 no search active, opens the back-to-account prompt). Opening a chat and returning leaves
 the search filter and your selected chat unchanged.
+
+**Searching within a chat.** Press `Ctrl+F` in a chat to open a `Search:` bar above the
+message input. Type to filter the conversation live — the match is case-insensitive and
+partial, against the message text, the displayed timestamp, and (in groups) the sender
+name. The matching messages are shown with the most recent one selected (subtle reverse-video
+highlight); `↑`/`↓` step through matches while you keep typing. Press `Enter` to clear the
+search and scroll the full conversation to the selected message (centred, with the messages
+before and after it back in view), or `Esc` to cancel and return to the latest message.
+Press `End` at any time to jump straight to the latest message.
 
 ## History sync
 

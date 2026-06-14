@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { absoluteMediaPath } from "../../persistence/mediaStore.js";
 import type { Chat, Message } from "../../types/index.js";
-import { BOLD, senderColor, theme, type TextStyle } from "../theme.js";
+import { BOLD, INVERSE, senderColor, theme, type TextStyle } from "../theme.js";
 import {
   aggregateReactions,
   formatMessageTime,
@@ -34,6 +34,13 @@ export interface MessageItemProps {
   chat: Chat;
   /** Total row width (terminal columns) — used to size and wrap the message bubble. */
   width: number;
+  /** When true, the message content is shown reverse-video (chat-view search selection). */
+  selected?: boolean;
+}
+
+/** OR in reverse-video when the row is selected — same convention as the chat-list selection. */
+function withSelection(style: TextStyle, selected: boolean): TextStyle {
+  return selected ? { ...style, attributes: (style.attributes ?? 0) | INVERSE } : style;
 }
 
 type LineData =
@@ -127,36 +134,36 @@ function layoutLines(message: Message, chat: Chat, maxWidth: number): LineData[]
   return lines;
 }
 
-function renderLine(line: LineData, key: string): ReactNode {
+function renderLine(line: LineData, key: string, selected: boolean): ReactNode {
   switch (line.kind) {
     case "sender":
       return (
-        <text key={key} {...line.style} attributes={BOLD}>
+        <text key={key} {...withSelection({ ...line.style, attributes: BOLD }, selected)}>
           {line.text}
         </text>
       );
     case "quoted":
       return (
-        <text key={key} {...theme.meta}>
+        <text key={key} {...withSelection(theme.meta, selected)}>
           {line.text}
         </text>
       );
     case "media":
       return (
-        <text key={key} {...theme.mediaLink}>
+        <text key={key} {...withSelection(theme.mediaLink, selected)}>
           {line.text}
         </text>
       );
     case "text":
-      return <text key={key}>{line.text}</text>;
+      return <text key={key} {...withSelection({}, selected)}>{line.text}</text>;
     case "meta":
       return (
         <box key={key} style={{ flexDirection: "row" }}>
-          <text {...theme.meta}>{line.time}</text>
-          {line.deleted ? <text {...theme.deleted}>{" (deleted)"}</text> : null}
-          {line.edited ? <text {...theme.meta}>{" (edited)"}</text> : null}
-          {line.ticks ? <text {...line.ticks.style}>{` ${line.ticks.symbol}`}</text> : null}
-          {line.reactions ? <text {...theme.meta}>{` ${line.reactions}`}</text> : null}
+          <text {...withSelection(theme.meta, selected)}>{line.time}</text>
+          {line.deleted ? <text {...withSelection(theme.deleted, selected)}>{" (deleted)"}</text> : null}
+          {line.edited ? <text {...withSelection(theme.meta, selected)}>{" (edited)"}</text> : null}
+          {line.ticks ? <text {...withSelection(line.ticks.style, selected)}>{` ${line.ticks.symbol}`}</text> : null}
+          {line.reactions ? <text {...withSelection(theme.meta, selected)}>{` ${line.reactions}`}</text> : null}
         </box>
       );
   }
@@ -177,7 +184,7 @@ export function messageRowCount(message: Message, chat: Chat, width: number): nu
  * inbound = left-aligned with a cyan/default `│` on the left; outbound = right-aligned with a
  * green `│` on the right.
  */
-export function MessageItem({ message, chat, width }: MessageItemProps) {
+export function MessageItem({ message, chat, width, selected = false }: MessageItemProps) {
   const outbound = message.direction === "outbound";
   const maxContentWidth = maxMessageContentWidth(width);
   const lines = layoutLines(message, chat, maxContentWidth);
@@ -202,7 +209,7 @@ export function MessageItem({ message, chat, width }: MessageItemProps) {
     >
       {lines.map((line, i) => (
         <box key={`content-${i}`} style={{ flexDirection: "row" }}>
-          {renderLine(line, `line-${i}`)}
+          {renderLine(line, `line-${i}`, selected)}
         </box>
       ))}
     </box>

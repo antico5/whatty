@@ -6,6 +6,8 @@ import { theme } from "../theme.js";
 export interface DraftInputProps {
   onSubmit: (text: string) => void;
   readonly?: boolean;
+  /** When true, the input ignores all keys/paste (e.g. while the chat-view search box is focused). */
+  paused?: boolean;
 }
 
 const PLACEHOLDER = "Type a message…";
@@ -16,7 +18,7 @@ const READONLY_PLACEHOLDER = "read-only mode";
  * scroll the message history, even while the draft is being edited — a native input would
  * swallow arrow keys for cursor movement instead. No newline support, draft isn't persisted.
  */
-export function DraftInput({ onSubmit, readonly = false }: DraftInputProps) {
+export function DraftInput({ onSubmit, readonly = false, paused = false }: DraftInputProps) {
   const [draft, setDraft] = useState("");
   const { keyHandler } = useAppContext();
 
@@ -25,17 +27,17 @@ export function DraftInput({ onSubmit, readonly = false }: DraftInputProps) {
   // middle-click, etc.), not as keystrokes. Flatten newlines to spaces since
   // the draft is single-line.
   useEffect(() => {
-    if (readonly || !keyHandler) return;
+    if (readonly || paused || !keyHandler) return;
     const onPaste = (event: PasteEvent) => {
       const text = decodePasteBytes(event.bytes).replace(/\r?\n/g, " ");
       if (text) setDraft((current) => current + text);
     };
     keyHandler.on("paste", onPaste);
     return () => void keyHandler.off("paste", onPaste);
-  }, [keyHandler, readonly]);
+  }, [keyHandler, readonly, paused]);
 
   useKeyboard((key) => {
-    if (readonly) return;
+    if (readonly || paused) return;
     if (key.name === "return") {
       const trimmed = draft.trim();
       if (trimmed) {
