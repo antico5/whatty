@@ -1,5 +1,6 @@
 import type { Boom } from "@hapi/boom";
 import makeWASocket, {
+  ALL_WA_PATCH_NAMES,
   DisconnectReason,
   fetchLatestBaileysVersion,
   jidNormalizedUser,
@@ -34,6 +35,17 @@ const RECONNECT_MAX_DELAY_MS = 10000;
  */
 const MAX_RECONNECT_ATTEMPTS = 6;
 const MESSAGE_CACHE_LIMIT = 2_000;
+/**
+ * Delay after a connection opens before forcing an app-state resync. Address-book
+ * contact names live in WhatsApp's `regular*` app-state collections, fetched via
+ * `resyncAppState`. Baileys runs that sync once, the instant the history-sync
+ * notification arrives — which for a freshly-linked device can beat the server's
+ * provisioning of the app-state snapshot. When it does, those collections come
+ * back empty, are silently marked done, and are never retried, so contact names
+ * never arrive (the chat renders as "Not Contact"). Forcing one resync a short
+ * while after the socket opens lets the snapshot and the decryption key land first.
+ */
+const APP_STATE_RESYNC_DELAY_MS = 10_000;
 
 const recentMessageContent = new Map<string, proto.IMessage>();
 const recentMessageContentById = new Map<string, proto.IMessage>();
@@ -197,6 +209,7 @@ export function createConnection(options: ConnectionOptions): Connection {
   let stopped = false;
   let reconnectAttempt = 0;
   let reconnectTimer: NodeJS.Timeout | null = null;
+  let appStateResyncTimer: NodeJS.Timeout | null = null;
   /** Live creds of the current socket — pairing writes `me` here the moment the QR is scanned. */
   let creds: { me?: { id: string } } | null = null;
 
@@ -205,6 +218,31 @@ export function createConnection(options: ConnectionOptions): Connection {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
     }
+  }
+
+  function clearAppStateResyncTimer(): void {
+    if (appStateResyncTimer) {
+      clearTimeout(appStateResyncTimer);
+      appStateResyncTimer = null;
+    }
+  }
+
+  /**
+   * Force an app-state resync of every collection once, a short delay after the
+   * socket opens. Idempotent and cheap: collections already current return no
+   * patches; a collection left at v0 because Baileys' initial sync raced the
+   * server's snapshot provisioning is re-fetched here, which is what finally
+   * emits `contacts.upsert` for address-book names. Scheduled on every open so a
+   * later reconnect or launch self-heals if an earlier attempt was cut short.
+   */
+  function scheduleAppStateResync(socket: WASocket): void {
+    clearAppStateResyncTimer();
+    appStateResyncTimer = setTimeout(() => {
+      appStateResyncTimer = null;
+      socket
+        .resyncAppState(ALL_WA_PATCH_NAMES, false)
+        .catch((err) => log.warn({ err }, "forced app-state resync failed"));
+    }, APP_STATE_RESYNC_DELAY_MS);
   }
 
   function scheduleReconnect(): void {
@@ -294,7 +332,11 @@ export function createConnection(options: ConnectionOptions): Connection {
         // exists at event time.
         const user = socket.user;
         if (user?.id) enqueue("own-identity", { id: user.id, lid: user.lid ?? null, name: user.name ?? null });
+        // Recover address-book contact names that Baileys' one-shot app-state
+        // sync can miss on a fresh link (see APP_STATE_RESYNC_DELAY_MS).
+        if (!linkMode) scheduleAppStateResync(socket);
       } else if (update.connection === "close") {
+        clearAppStateResyncTimer();
         const statusCode = statusCodeOf(update);
         log.info(
           { statusCode, status, attempt: reconnectAttempt },
@@ -400,6 +442,7 @@ export function createConnection(options: ConnectionOptions): Connection {
     stopped = true;
     started = false;
     clearReconnectTimer();
+    clearAppStateResyncTimer();
     if (sock) {
       const current = sock;
       sock = null;
