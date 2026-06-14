@@ -20,32 +20,6 @@ pnpm start
 
 `pnpm dev` runs the same entry point with file-watching (`bun --watch`) for development.
 
-### First run (no linked accounts)
-
-A QR code is printed to the terminal:
-
-1. On your phone: **WhatsApp → Settings → Linked devices → Link a device**.
-2. Scan the QR code shown in the terminal.
-
-Once paired, the app transitions straight to the chat list.
-
-### Subsequent runs (one or more linked accounts)
-
-A boot-time account selector is shown. Use `↑`/`↓` to navigate and `Enter` to open an
-account. The last entry is always **Link new device**, which starts a fresh QR pairing flow
-and adds the new account to the list.
-
-On launch the selector also checks npm for a newer release. If one is available it shows an
-`↑ whatty vX.Y.Z available — update: npm i -g whatty@latest` notice. The check runs fresh on
-every start (no caching), is best-effort, and is silently skipped when offline so it never
-delays startup.
-
-### Session expiry / unlinking
-
-If a device is removed from your phone, the app detects the dead session and removes that
-account from the selector. Chat history and media are kept on disk — if the same phone
-re-links later via QR, the account reappears in the selector and resumes its previous history.
-
 ## Where data is stored
 
 Everything lives under the platform data directory — `~/.local/share/whatty`
@@ -62,19 +36,6 @@ on macOS, `%LOCALAPPDATA%\whatty\Data` on Windows — overridable with the
 | `whatty.log` | Application log (structured JSON via pino — set `WHATTY_LOG_LEVEL` to adjust verbosity, e.g. `debug`) |
 | `sync-queue.log` | Sync-queue processor log: every job lifecycle including payloads (capped at 100 MB, one rotated generation kept as `.1`) |
 
-`<id>` is the account's own normalized WhatsApp JID (e.g. `12025550100@s.whatsapp.net`).
-Because chats are namespaced under their account, two accounts can have separate
-conversations with the same contact without collision.
-
-**One instance per account.** Opening an account that is already open in another running
-instance fails back to the account selector (two instances would fight over the WhatsApp
-session, disconnecting each other every few seconds). The lock clears itself: if the
-holding process died (even `kill -9`), the next start takes the lock over automatically.
-
-> **Breaking change:** databases created by earlier versions (schema v1) are
-> incompatible with this build. There is no migration — the app refuses to start with an
-> error until you delete the data directory and re-link your device (history is then
-> re-synced from your phone).
 
 **Nothing is ever deleted.** Sync with your phone is purely additive: it can update or
 extend local records, but a chat or message that exists locally is never removed — even if
@@ -82,57 +43,6 @@ it's deleted on the phone. Single-message deletions are reflected as a "deleted"
 while the original content is retained locally. "Removing" an account from the selector only
 deletes its credentials (`auth/`); chat history and media are never touched.
 
-## Keybindings
-
-| Key | Account selector | Chat list | Chat view |
-| --- | --- | --- | --- |
-| `↑` / `↓` | Move selection | Move chat selection | Scroll history (step matches while searching) |
-| `Enter` | Open account / link new device | Open the selected chat | Send the draft (jump to the match while searching) |
-| `R` | — | Toggle read receipts on/off | — |
-| `H` | — | Show / hide help | — |
-| `Ctrl+F` / `Space` | — | Search chats by name or number | `Ctrl+F`: search messages |
-| `End` | — | — | Jump to the latest message |
-| `Esc` | — | Clear an active search, else back to account selection | Clear an active search, else back to the chat list |
-| `Ctrl+C` | Copy the selection | Copy the selection | Copy the selection |
-| `Ctrl+D` | Quit the app | Quit the app | Quit the app |
-| _Paste_ | — | — | Inserts clipboard text into the draft (single line) |
-| _(typing)_ | — | — | Edits the draft input (navigation keys above still work) |
-
-`Ctrl+C` copies the current selection to the system clipboard. The app captures the
-mouse, so drag-selecting highlights just the message text; `Ctrl+C` then copies it. The
-copy is piped to a native clipboard helper — `wl-copy` (Wayland), `xclip` (X11),
-`pbcopy` (macOS) or `clip` (Windows) — so the matching tool must be installed; OSC 52 is
-*not* used, since VTE terminals (tilix, gnome-terminal) don't honour it. If your terminal
-already binds `Ctrl+C` to copy (e.g. tilix `terminal-copy`), that binding only fires when
-a *native* terminal selection exists, so it doesn't conflict with the in-app copy; to use
-it, hold `Shift` while dragging to make a native selection. `Ctrl+D` quits. Paste uses
-your terminal's normal paste action (Ctrl+Shift+V, middle-click, or whatever you've bound
-it to), delivered via bracketed paste; newlines are flattened to spaces.
-
-**Searching the chat list.** Press `Ctrl+F` (or `Space`) on the chat list to open a `Search:` bar above
-the read-receipts line. Type to filter the list live — the match is case-insensitive and
-partial, against both the chat name and (for individual chats) the phone number. Press
-`Enter` to keep the filter and hand focus back to the list, where `↑`/`↓`, `R`, `H` and
-`Enter` work as usual on the matches. Press `Esc` to clear the search (a second `Esc`, with
-no search active, opens the back-to-account prompt). Opening a chat and returning leaves
-the search filter and your selected chat unchanged.
-
-**Searching within a chat.** Press `Ctrl+F` in a chat to open a `Search:` bar above the
-message input. Type to filter the conversation live — the match is case-insensitive and
-partial, against the message text, the displayed timestamp, and (in groups) the sender
-name. The matching messages are shown with the most recent one selected (subtle reverse-video
-highlight); `↑`/`↓` step through matches while you keep typing. Press `Enter` to clear the
-search and scroll the full conversation to the selected message (centred, with the messages
-before and after it back in view), or `Esc` to cancel and return to the latest message.
-Press `End` at any time to jump straight to the latest message.
-
-## History sync
-
-Linking a device makes the phone upload its full message history, and the app now ingests
-**all** of it — including the deep-history (`FULL`) chunks that earlier builds silently
-discarded — so old conversations are browsable after a fresh link. Media older than the
-eager auto-download window (below) is listed with a "not downloaded" hint and fetched
-on demand when you scroll the message into view.
 
 ## Media download
 
@@ -168,36 +78,3 @@ expired and the original sender's device is unreachable for a re-upload — in t
 the entry keeps showing the "not downloaded" hint. The eager window stays small to avoid
 pulling years of media up front; on-demand fetching only pays the cost for what you
 actually look at.
-
-## Business & interactive messages
-
-Template, button and list messages sent by business accounts (the kind the phone renders
-with tappable buttons) are shown as plain text: title, body and footer lines followed by
-one `[label]` line per button — `[label: url]` for link buttons. The buttons themselves
-aren't interactive. On startup the app re-examines stored messages that had no renderable
-text and backfills them, so business chats that previously showed empty entries populate
-retroactively.
-
-## v1 scope & limitations
-
-- **Outbound: text only.** Sending media, replies, and reactions isn't supported yet
-  (incoming media, replies and reactions are still received, downloaded/stored, and shown).
-- **No reactions rendering.** Reactions are received and stored but not displayed.
-- **No unread tracking.** The app never computes, stores, or displays unread counts.
-- **Read receipts off by default (lurk-friendly).** When off, opening a chat never notifies
-  the sender. Press `R` on the chat list to toggle read receipts on or off; the preference is
-  saved per account. When on, opening a chat with unread messages sends read receipts (blue
-  ticks) for them and clears its unread badge. Delivery/read ticks shown for *your* outbound
-  messages still update live as the recipient's device reports them regardless of this setting.
-- **No search/filter** in the chat list — just the full, sorted, scrollable list.
-
-## Development
-
-```sh
-pnpm test        # vitest — core logic (persistence, reconciliation, mappers, stores, …)
-pnpm test:watch  # vitest in watch mode
-pnpm typecheck   # tsc --noEmit
-```
-
-UI screens are exercised manually (they depend on `@opentui/core`'s Bun-only renderer and
-can't run under vitest/Node) — core logic and data-mapping have full automated coverage.
