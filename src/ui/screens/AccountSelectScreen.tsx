@@ -367,7 +367,7 @@ export function AccountSelectScreen() {
         justifyContent: "center",
       }}
     >
-      <text {...theme.accent}>whatsapp-terminal — Choose an account</text>
+      <text {...theme.accent}>whatty — Choose an account</text>
       <box style={{ marginTop: 1, flexDirection: "column" }}>
         {accounts.map((account, index) => {
           const selected = index === clampedIndex;

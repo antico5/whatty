@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DATA_DIR="${WHATSAPP_TERMINAL_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/whatsapp-terminal}"
-DEST="/tmp/wa-chat-media-$$"
+DATA_DIR="${WHATTY_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/whatty}"
+DEST="/tmp/whatty-media-$$"
 mkdir -p "$DEST"
 
 shopt -s nullglob

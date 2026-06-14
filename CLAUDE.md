@@ -1,4 +1,4 @@
-# wa-chat — session context
+# whatty — session context
 
 ## What this is
 
@@ -68,16 +68,16 @@ files — they are excluded from `tsconfig.json` and should not be touched.
         failed/           ← jobs parked after exhausting retries (inspectable/replayable)
       app.lock            ← single-instance lock { pid, startedAt }; stale-pid takeover
     .pending-<ts>/        ← auth dir during "Link new device"
-  whatsapp-terminal.log
+  whatty.log
   sync-queue.log          ← queue processor log incl. payloads (100 MB cap, .1 generation)
 ```
 
 `dataDir` resolves as (in priority order):
 
-1. `$WHATSAPP_TERMINAL_DATA_DIR` (env override)
-2. `$XDG_DATA_HOME/whatsapp-terminal` → `~/.local/share/whatsapp-terminal` (Linux)
-3. `~/Library/Application Support/whatsapp-terminal` (macOS)
-4. `%LOCALAPPDATA%\whatsapp-terminal\Data` (Windows)
+1. `$WHATTY_DATA_DIR` (env override)
+2. `$XDG_DATA_HOME/whatty` → `~/.local/share/whatty` (Linux)
+3. `~/Library/Application Support/whatty` (macOS)
+4. `%LOCALAPPDATA%\whatty\Data` (Windows)
 
 ## Commit policy
 
@@ -121,12 +121,12 @@ reasoning from code alone. `sqlite3` is not installed; use `bun` instead:
 ```
 bun -e "
 const { Database } = await import('bun:sqlite');
-const db = new Database('/home/USERNAME/.local/share/whatsapp-terminal/accounts/<accountId>/chats.db', { readonly: true });
+const db = new Database('/home/USERNAME/.local/share/whatty/accounts/<accountId>/chats.db', { readonly: true });
 console.log(db.query('SELECT ...').all());
 "
 ```
 
-Account dirs are under `~/.local/share/whatsapp-terminal/accounts/`. Always
+Account dirs are under `~/.local/share/whatty/accounts/`. Always
 inspect actual rows (accounts, account_jids, chats, messages, participants)
 before concluding what the data does or doesn't contain.
 
@@ -140,7 +140,7 @@ db.query("SELECT event_type, payload FROM events ORDER BY rowid DESC LIMIT 20").
 Also read the log file for runtime errors and warnings:
 
 ```
-cat ~/.local/share/whatsapp-terminal/whatsapp-terminal.log | tail -100
+cat ~/.local/share/whatty/whatty.log | tail -100
 ```
 
 The sync queue has its own log with full job payloads — the first place to look
@@ -148,6 +148,6 @@ when a message or media seems lost (`enqueued` → `started` → `completed` /
 `failed` / `parked` per job), plus the on-disk queue itself:
 
 ```
-tail -100 ~/.local/share/whatsapp-terminal/sync-queue.log
-ls ~/.local/share/whatsapp-terminal/accounts/<accountId>/queue/{pending,failed}
+tail -100 ~/.local/share/whatty/sync-queue.log
+ls ~/.local/share/whatty/accounts/<accountId>/queue/{pending,failed}
 ```

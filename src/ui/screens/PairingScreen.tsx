@@ -18,7 +18,7 @@ export function PairingScreen() {
 
   return (
     <box style={{ flexGrow: 1, flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
-      <text {...theme.accent}>whatsapp-terminal — Link a device</text>
+      <text {...theme.accent}>whatty — Link a device</text>
       <text {...theme.meta}>Phone → WhatsApp → Linked devices → Link a device, then scan.</text>
       <box style={{ marginTop: 1, alignItems: "center" }}>
         {qrAscii ? (

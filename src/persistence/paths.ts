@@ -23,7 +23,7 @@ import path from "node:path";
  */
 
 /** App name used as the data-directory leaf on every platform. */
-const APP_DIR_NAME = "whatsapp-terminal";
+const APP_DIR_NAME = "whatty";
 
 /**
  * Platform-native data directory for the app (inlined from the env-paths
@@ -31,9 +31,9 @@ const APP_DIR_NAME = "whatsapp-terminal";
  *
  * | OS      | Path                                                              |
  * |---------|-------------------------------------------------------------------|
- * | Linux   | `$XDG_DATA_HOME/whatsapp-terminal` → `~/.local/share/whatsapp-terminal` |
- * | macOS   | `~/Library/Application Support/whatsapp-terminal`                 |
- * | Windows | `%LOCALAPPDATA%\whatsapp-terminal\Data`                           |
+ * | Linux   | `$XDG_DATA_HOME/whatty` → `~/.local/share/whatty` |
+ * | macOS   | `~/Library/Application Support/whatty`                 |
+ * | Windows | `%LOCALAPPDATA%\whatty\Data`                           |
  */
 export function defaultDataDir(): string {
   const home = os.homedir();
@@ -61,7 +61,7 @@ export function getActiveAccount(): string | null {
 }
 
 export function dataDir(): string {
-  return process.env.WHATSAPP_TERMINAL_DATA_DIR ?? defaultDataDir();
+  return process.env.WHATTY_DATA_DIR ?? defaultDataDir();
 }
 
 export function accountsRootDir(): string {
@@ -99,7 +99,7 @@ export function mediaDir(): string {
 
 /** Path to the app-wide log file. */
 export function logFilePath(): string {
-  return path.join(dataDir(), "whatsapp-terminal.log");
+  return path.join(dataDir(), "whatty.log");
 }
 
 /** Path to the queue processor's dedicated log file. */

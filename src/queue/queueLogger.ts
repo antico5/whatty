@@ -7,7 +7,7 @@ import { queueLogFilePath } from "../persistence/paths.js";
  * Dedicated log for the durable job queue: every job lifecycle transition is
  * logged here *including payloads*, so a lost message can always be traced to
  * the exact bytes the queue accepted. Kept separate from the operational log
- * (`whatsapp-terminal.log`) because payload logging is high-volume.
+ * (`whatty.log`) because payload logging is high-volume.
  *
  * Unlike the startup-only rotation in `src/logger.ts`, this log rotates
  * mid-session: history-sync bursts can write hundreds of MB in one run, so

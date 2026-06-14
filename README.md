@@ -1,4 +1,4 @@
-# whatsapp-terminal
+# whatty
 
 A terminal UI WhatsApp client — like WhatsApp Web, but in your terminal. Built on
 [Baileys](https://github.com/WhiskeySockets/Baileys) and [OpenTUI](https://github.com/sst/opentui)
@@ -43,10 +43,10 @@ re-links later via QR, the account reappears in the selector and resumes its pre
 
 ## Where data is stored
 
-Everything lives under the platform data directory — `~/.local/share/whatsapp-terminal`
-on Linux (honouring `$XDG_DATA_HOME`), `~/Library/Application Support/whatsapp-terminal`
-on macOS, `%LOCALAPPDATA%\whatsapp-terminal\Data` on Windows — overridable with the
-`WHATSAPP_TERMINAL_DATA_DIR` environment variable:
+Everything lives under the platform data directory — `~/.local/share/whatty`
+on Linux (honouring `$XDG_DATA_HOME`), `~/Library/Application Support/whatty`
+on macOS, `%LOCALAPPDATA%\whatty\Data` on Windows — overridable with the
+`WHATTY_DATA_DIR` environment variable:
 
 | Path | Contents |
 | --- | --- |
@@ -54,7 +54,7 @@ on macOS, `%LOCALAPPDATA%\whatsapp-terminal\Data` on Windows — overridable wit
 | `accounts/<id>/media/` | Downloaded media (images, video, audio, documents, stickers, view-once) |
 | `accounts/<id>/queue/` | Durable sync queue: every WhatsApp event is journaled to `pending/` before processing and removed once applied, so a crash never loses data — leftover jobs simply resume on the next start. Jobs that keep failing are parked in `failed/` for inspection |
 | `accounts/<id>/app.lock` | Single-instance lock (see below) |
-| `whatsapp-terminal.log` | Application log (structured JSON via pino — set `WHATSAPP_TERMINAL_LOG_LEVEL` to adjust verbosity, e.g. `debug`) |
+| `whatty.log` | Application log (structured JSON via pino — set `WHATTY_LOG_LEVEL` to adjust verbosity, e.g. `debug`) |
 | `sync-queue.log` | Sync-queue processor log: every job lifecycle including payloads (capped at 100 MB, one rotated generation kept as `.1`) |
 
 `<id>` is the account's own normalized WhatsApp JID (e.g. `12025550100@s.whatsapp.net`).
