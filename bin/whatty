@@ -1,0 +1,7 @@
+#!/usr/bin/env sh
+if ! command -v bun >/dev/null 2>&1; then
+  echo "whatty requires Bun. Install it from https://bun.sh" >&2
+  exit 1
+fi
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+exec bun "$SCRIPT_DIR/../src/index.ts" "$@"

@@ -1,11 +1,26 @@
 {
   "name": "whatty",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
   "engines": {
-    "node": ">=22.5.0"
+    "node": ">=22.5.0",
+    "bun": ">=1.0.0"
   },
+  "bin": {
+    "whatty": "bin/whatty"
+  },
+  "files": [
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "src/**/*.json",
+    "!src/**/*.test.ts",
+    "!src/**/*.spec.ts",
+    "!src/**/__fixtures__/",
+    "bin",
+    "patches",
+    "scripts/postinstall.sh",
+    "tsconfig.json"
+  ],
   "packageManager": "pnpm@11.2.2",
   "scripts": {
     "start": "bun src/index.ts",
@@ -13,7 +28,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "debug:all-media": "bash scripts/debug-all-media.sh"
+    "debug:all-media": "bash scripts/debug-all-media.sh",
+    "postinstall": "sh scripts/postinstall.sh"
   },
   "dependencies": {
     "@hapi/boom": "^10.0.1",
