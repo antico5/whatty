@@ -35,12 +35,17 @@ function Router(): ReactNode {
   const [hasOpened, setHasOpened] = useState(connectionState === "open");
   const [activeJid, setActiveJid] = useState<string | null>(null);
   const [lastSelectedJid, setLastSelectedJid] = useState<string | null>(null);
+  // The chat-list search query is owned here, not in ChatListScreen, so it survives that
+  // screen's unmount when a chat opens — returning to the list restores the same filter
+  // (alongside the selected chat, via `lastSelectedJid`). Reset on leaving the session.
+  const [searchQuery, setSearchQuery] = useState("");
 
   useEffect(() => {
     if (phase !== "session" || connectionState === "logged-out") {
       setHasOpened(false);
       setActiveJid(null);
       setLastSelectedJid(null);
+      setSearchQuery("");
     } else if (connectionState === "open") {
       setHasOpened(true);
     }
@@ -73,7 +78,7 @@ function Router(): ReactNode {
     body = (
       <box style={{ flexGrow: 1, flexDirection: "row", justifyContent: "center" }}>
         <box style={{ flexGrow: 1, maxWidth: LAYOUT_MAX_WIDTH, flexDirection: "column" }}>
-          {activeJid !== null ? <ChatViewScreen jid={activeJid} /> : <ChatListScreen initialSelectedJid={lastSelectedJid} />}
+          {activeJid !== null ? <ChatViewScreen jid={activeJid} /> : <ChatListScreen initialSelectedJid={lastSelectedJid} query={searchQuery} setQuery={setSearchQuery} />}
           <StatusBar />
         </box>
       </box>

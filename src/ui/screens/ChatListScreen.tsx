@@ -1,5 +1,5 @@
 import { useKeyboard, useTerminalDimensions } from "@opentui/react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
 import { useAppStore, useChats, useReadReceipts } from "../../store/StoreContext.js";
 import { useNavigation } from "../App.js";
 import { ChatListItem } from "../components/ChatListItem.js";
@@ -27,8 +27,13 @@ const FOOTER_ROWS = 3;
 
 export function ChatListScreen({
   initialSelectedJid,
+  query,
+  setQuery,
 }: {
   initialSelectedJid?: string | null;
+  // Owned by App's Router so the filter persists across opening a chat and returning.
+  query: string;
+  setQuery: Dispatch<SetStateAction<string>>;
 }) {
   const chats = useChats();
   const navigation = useNavigation();
@@ -45,11 +50,12 @@ export function ChatListScreen({
   // When true the ConfirmModal is shown and the list keyboard is suppressed.
   const [confirmingExit, setConfirmingExit] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
-  // Search: `writingSearchQuery` = the search box owns the keyboard; `query` = its text.
-  // Everything else is derived — the bar shows while writing or whenever a query is set,
-  // and a non-empty (trimmed) query filters the list. Both reset together on cancel.
+  // Search: `writingSearchQuery` = the search box owns the keyboard; `query` (its text,
+  // a prop owned by the Router) survives this screen's unmount when a chat opens. The bar
+  // shows while writing or whenever a query is set; a non-empty (trimmed) query filters.
+  // `writingSearchQuery` is local, so returning from a chat lands in the navigable
+  // (non-writing) applied state rather than back in the input box.
   const [writingSearchQuery, setWritingSearchQuery] = useState(false);
-  const [query, setQuery] = useState("");
 
   useEffect(() => {
     if (selectedJid === null && chats.length > 0) {

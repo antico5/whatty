@@ -108,7 +108,8 @@ the read-receipts line. Type to filter the list live — the match is case-insen
 partial, against both the chat name and (for individual chats) the phone number. Press
 `Enter` to keep the filter and hand focus back to the list, where `↑`/`↓`, `R`, `H` and
 `Enter` work as usual on the matches. Press `Esc` to clear the search (a second `Esc`, with
-no search active, opens the back-to-account prompt). Opening a chat clears the search.
+no search active, opens the back-to-account prompt). Opening a chat and returning leaves
+the search filter and your selected chat unchanged.
 
 ## History sync
 
